@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "视频号/头条号批量截图助手",
+  "version": "0.1.0",
+  "description": "在真实 Chrome 浏览器中批量打开视频号/头条号链接并截图下载。",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "视频号/头条号批量截图助手",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "activeTab",
+    "downloads",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://weixin.qq.com/sph/*",
+        "https://channels.weixin.qq.com/*",
+        "https://m.toutiao.com/*",
+        "https://toutiao.com/*",
+        "https://www.toutiao.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

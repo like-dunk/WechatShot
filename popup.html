@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>视频号/头条号批量截图助手</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main class="app">
+    <section class="hero">
+      <div>
+        <h1>视频号/头条号批量截图助手</h1>
+        <p>导入 Excel/CSV，在真实 Chrome 标签页中批量截图。</p>
+      </div>
+      <span id="statusBadge" class="badge">待导入</span>
+    </section>
+
+    <section class="card">
+      <label class="file-picker">
+        <input id="fileInput" type="file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+        <span>选择 Excel / CSV 文件</span>
+      </label>
+      <div id="fileInfo" class="muted">自动识别视频号/头条号链接列，支持序号、昵称</div>
+    </section>
+
+    <section class="card grid">
+      <label>
+        并发标签页
+        <input id="concurrencyInput" type="number" min="1" max="8" value="2">
+      </label>
+      <label>
+        截图间隔秒
+        <input id="delayInput" type="number" min="0.5" max="10" step="0.5" value="0.8">
+      </label>
+      <label>
+        页面等待秒
+        <input id="waitInput" type="number" min="3" max="60" step="1" value="12">
+      </label>
+      <label>
+        最多处理条数
+        <input id="limitInput" type="number" min="0" step="1" placeholder="留空为全部">
+      </label>
+      <label class="wide-field">
+        文件名前缀
+        <select id="sequenceModeInput">
+          <option value="sequence" selected>优先使用 Excel 序号列</option>
+          <option value="row">严格使用 Excel 行号 - 1</option>
+        </select>
+      </label>
+      <label class="wide-field">
+        截图画面
+        <select id="captureSizeModeInput">
+          <option value="current" selected>当前默认 1440×1200</option>
+          <option value="vertical">手机竖屏 9:16（720×1280）</option>
+          <option value="horizontal">横屏 16:9（1280×720）</option>
+          <option value="square">方图 1:1（1080×1080）</option>
+          <option value="custom">自定义宽高</option>
+        </select>
+      </label>
+      <label>
+        截图宽度
+        <input id="captureWidthInput" type="number" min="360" max="1920" step="10" value="1440" disabled>
+      </label>
+      <label>
+        截图高度
+        <input id="captureHeightInput" type="number" min="360" max="2160" step="10" value="1200" disabled>
+      </label>
+      <label class="wide-field checkbox-field">
+        <input id="screenshotWorkbookInput" type="checkbox">
+        <span>同时导出带截图列的 Excel（文件较大）</span>
+      </label>
+    </section>
+
+    <section class="notice">
+      截图期间会创建专用 Chrome 窗口，并在每次截图前自动拉回前台；普通插件无法真正后台截图或锁定置顶，请不要关闭该窗口。
+    </section>
+
+    <section class="card controls">
+      <button id="startButton" class="primary" disabled>开始截图</button>
+      <button id="pauseButton" disabled>暂停</button>
+      <button id="resumeButton" disabled>继续</button>
+      <button id="stopButton" disabled>停止</button>
+    </section>
+
+    <section class="card stats">
+      <div><strong id="totalCount">0</strong><span>总数</span></div>
+      <div><strong id="successCount">0</strong><span>成功</span></div>
+      <div><strong id="failedCount">0</strong><span>失败</span></div>
+      <div><strong id="pendingCount">0</strong><span>待处理</span></div>
+    </section>
+
+    <section class="card">
+      <div class="section-title">任务预览</div>
+      <div id="previewList" class="preview empty">暂无任务</div>
+    </section>
+
+    <section class="card">
+      <div class="section-title">运行日志</div>
+      <div id="logList" class="logs"></div>
+    </section>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

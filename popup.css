@@ -1,0 +1,269 @@
+:root {
+  color-scheme: light;
+  --bg: #f6f7fb;
+  --card: #ffffff;
+  --text: #172033;
+  --muted: #6b7280;
+  --primary: #1677ff;
+  --primary-dark: #0f5ed7;
+  --border: #e5e7eb;
+  --success: #16a34a;
+  --danger: #dc2626;
+  --warning: #d97706;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  width: 420px;
+  min-height: 620px;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.app {
+  padding: 14px;
+}
+
+.hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 20px;
+}
+
+p {
+  margin: 4px 0 0;
+  color: var(--muted);
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+  margin-bottom: 10px;
+  padding: 12px;
+}
+
+.badge {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #3730a3;
+  font-size: 12px;
+  padding: 4px 9px;
+}
+
+.badge.running {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
+.badge.done {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.badge.paused {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.file-picker {
+  display: block;
+  cursor: pointer;
+}
+
+.file-picker input {
+  display: none;
+}
+
+.file-picker span {
+  display: block;
+  border: 1px dashed #9ca3af;
+  border-radius: 12px;
+  padding: 18px 12px;
+  text-align: center;
+  font-weight: 700;
+  color: var(--primary);
+  background: #f8fbff;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 8px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: #374151;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+input[type="number"],
+select {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+  padding: 8px 9px;
+}
+
+.checkbox-field {
+  align-items: center;
+  flex-direction: row;
+  gap: 8px;
+  font-weight: 700;
+}
+
+.checkbox-field input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.wide-field {
+  grid-column: 1 / -1;
+}
+
+.notice {
+  border: 1px solid #fed7aa;
+  border-radius: 12px;
+  background: #fff7ed;
+  color: #9a3412;
+  font-size: 12px;
+  line-height: 1.5;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr 1fr;
+  gap: 8px;
+}
+
+button {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+  font-weight: 700;
+  padding: 9px 10px;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+button.primary {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: #fff;
+}
+
+button.primary:not(:disabled):hover {
+  background: var(--primary-dark);
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  text-align: center;
+}
+
+.stats div {
+  border-radius: 12px;
+  background: #f9fafb;
+  padding: 8px 4px;
+}
+
+.stats strong {
+  display: block;
+  font-size: 18px;
+}
+
+.stats span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.section-title {
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+
+.preview,
+.logs {
+  max-height: 150px;
+  overflow: auto;
+  border-radius: 10px;
+  background: #f9fafb;
+  padding: 8px;
+}
+
+.preview.empty {
+  color: var(--muted);
+  text-align: center;
+}
+
+.task-row,
+.log-row {
+  border-bottom: 1px solid #eef2f7;
+  padding: 5px 0;
+}
+
+.task-row:last-child,
+.log-row:last-child {
+  border-bottom: 0;
+}
+
+.task-name {
+  font-weight: 700;
+}
+
+.task-url,
+.log-row {
+  color: var(--muted);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.log-row.success {
+  color: var(--success);
+}
+
+.log-row.failed {
+  color: var(--danger);
+}
+
+.log-row.warning {
+  color: var(--warning);
+}

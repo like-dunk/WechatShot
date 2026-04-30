@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#4f46e5"/>
+      <stop offset="50%" stop-color="#7c3aed"/>
+      <stop offset="100%" stop-color="#a855f7"/>
+    </linearGradient>
+    <linearGradient id="play" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#e0e7ff"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#1e1b4b" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <rect x="4" y="4" width="120" height="120" rx="24" fill="none" stroke="white" stroke-opacity="0.08" stroke-width="1"/>
+  <g filter="url(#shadow)">
+    <path d="M30 46 L30 34 Q30 28 36 28 L48 28" stroke="white" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M80 28 L92 28 Q98 28 98 34 L98 46" stroke="white" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M30 82 L30 94 Q30 100 36 100 L48 100" stroke="white" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M98 82 L98 94 Q98 100 92 100 L80 100" stroke="white" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <g filter="url(#shadow)">
+    <path d="M54 46 L54 82 L82 64 Z" fill="url(#play)" opacity="0.95"/>
+  </g>
+  <circle cx="98" cy="100" r="16" fill="#22c55e"/>
+  <circle cx="98" cy="100" r="15" fill="none" stroke="white" stroke-width="1.5" stroke-opacity="0.3"/>
+  <g transform="translate(98,100)">
+    <rect x="-7" y="-1" width="14" height="2" rx="1" fill="white"/>
+    <rect x="-1" y="-7" width="2" height="14" rx="1" fill="white"/>
+  </g>
+</svg>
