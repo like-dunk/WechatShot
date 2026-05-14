@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>自动生成 PPT</title>
+  <style>
+    body {
+      margin: 0;
+      min-width: 320px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f7f9fc;
+      color: #1f2937;
+    }
+    main {
+      padding: 20px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 18px;
+    }
+    p {
+      margin: 0;
+      color: #64748b;
+      line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>正在自动生成 PPT</h1>
+    <p id="statusText">请稍候，完成后会自动触发下载并关闭此页面。</p>
+  </main>
+  <script src="screenshot-cache.js"></script>
+  <script src="pptx-builder.js"></script>
+  <script src="auto-ppt.js"></script>
+</body>
+</html>
