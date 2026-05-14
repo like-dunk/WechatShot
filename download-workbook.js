@@ -9,6 +9,8 @@ async function downloadWorkbook() {
   const port = chrome.runtime.connect({ name: "workbook-download" });
   const chunks = [];
   let fileName = "带截图.xlsx";
+  let mimeType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  let statusLabel = "正在接收带截图 Excel";
   let totalSize = 0;
   let receivedSize = 0;
   await new Promise((resolve, reject) => {
@@ -19,15 +21,17 @@ async function downloadWorkbook() {
       }
       if (message.type === "START") {
         fileName = message.fileName || fileName;
+        mimeType = message.mimeType || mimeType;
+        statusLabel = message.statusLabel || statusLabel;
         totalSize = message.totalSize || 0;
-        updateStatus(receivedSize, totalSize);
+        updateStatus(receivedSize, totalSize, statusLabel);
         return;
       }
       if (message.type === "CHUNK") {
         const bytes = base64ToBytes(message.data || "");
         chunks.push(bytes);
         receivedSize += bytes.length;
-        updateStatus(receivedSize, totalSize);
+        updateStatus(receivedSize, totalSize, statusLabel);
         port.postMessage({ type: "CHUNK_RECEIVED", id });
         return;
       }
@@ -38,7 +42,7 @@ async function downloadWorkbook() {
     });
     port.postMessage({ type: "READY", id });
   });
-  const blob = new Blob(chunks, { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const blob = new Blob(chunks, { type: mimeType });
   const url = URL.createObjectURL(blob);
   try {
     const downloadId = await chrome.downloads.download({
@@ -56,10 +60,10 @@ async function downloadWorkbook() {
   }
 }
 
-function updateStatus(receivedSize, totalSize) {
+function updateStatus(receivedSize, totalSize, statusLabel) {
   const receivedMb = (receivedSize / 1024 / 1024).toFixed(1);
   const totalMb = totalSize ? (totalSize / 1024 / 1024).toFixed(1) : "?";
-  document.getElementById("status").textContent = `正在接收带截图 Excel：${receivedMb}/${totalMb} MB`;
+  document.getElementById("status").textContent = `${statusLabel || "正在接收文件"}：${receivedMb}/${totalMb} MB`;
 }
 
 function base64ToBytes(base64) {

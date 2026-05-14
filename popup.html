@@ -3,84 +3,232 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>视频号/头条号批量截图助手</title>
+  <title>视频号/头条号/抖音/小红书批量截图助手</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
   <main class="app">
     <section class="hero">
       <div>
-        <h1>视频号/头条号批量截图助手</h1>
-        <p>导入 Excel/CSV，在真实 Chrome 标签页中批量截图。</p>
+        <div class="eyebrow">截图 · 补缺 · PPT</div>
+        <h1>批量截图助手</h1>
+        <p>按你的目标选择流程：批量截图、只补缺失截图，或用已有截图生成 PPT。</p>
       </div>
       <span id="statusBadge" class="badge">待导入</span>
     </section>
 
-    <section class="card">
-      <label class="file-picker">
-        <input id="fileInput" type="file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
-        <span>选择 Excel / CSV 文件</span>
-      </label>
-      <div id="fileInfo" class="muted">自动识别视频号/头条号链接列，支持序号、昵称</div>
+    <section class="quick-guide">
+      <div class="guide-card">
+        <strong>完整截图</strong>
+        <span>导入表格后处理全部支持链接</span>
+      </div>
+      <div class="guide-card">
+        <strong>精准补充</strong>
+        <span>选择原截图文件夹，只补缺失图片</span>
+      </div>
+      <div class="guide-card">
+        <strong>生成 PPT</strong>
+        <span>已有 ZIP 或文件夹可直接生成</span>
+      </div>
     </section>
 
-    <section class="card grid">
-      <label>
-        并发标签页
-        <input id="concurrencyInput" type="number" min="1" max="8" value="2">
+    <section class="card step-card">
+      <div class="section-heading">
+        <span class="step-badge">1</span>
+        <div>
+          <div class="section-title">导入任务表</div>
+          <p class="section-desc">支持 Excel / CSV，自动识别视频号、头条号、抖音、小红书发布链接，并读取序号与昵称。</p>
+        </div>
+      </div>
+      <label class="file-picker">
+        <input id="fileInput" type="file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+        <span>
+          <strong>选择 Excel / CSV 文件</strong>
+          <small>建议表头包含：序号、昵称、发布链接</small>
+        </span>
       </label>
-      <label>
-        截图间隔秒
-        <input id="delayInput" type="number" min="0.5" max="10" step="0.5" value="0.8">
-      </label>
-      <label>
-        页面等待秒
-        <input id="waitInput" type="number" min="3" max="60" step="1" value="12">
-      </label>
-      <label>
-        最多处理条数
-        <input id="limitInput" type="number" min="0" step="1" placeholder="留空为全部">
-      </label>
-      <label class="wide-field">
-        文件名前缀
-        <select id="sequenceModeInput">
-          <option value="sequence" selected>优先使用 Excel 序号列</option>
-          <option value="row">严格使用 Excel 行号 - 1</option>
+      <div id="fileInfo" class="muted status-hint">等待导入任务表。只生成“发布剪报多图铺页”PPT 时，可跳过这一步。</div>
+    </section>
+
+    <section class="card step-card">
+      <div class="section-heading">
+        <span class="step-badge">2</span>
+        <div>
+          <div class="section-title">选择截图方式</div>
+          <p class="section-desc">首次处理选完整截图；已有部分截图时选精准补充，插件会按完整文件名判断缺失项。</p>
+        </div>
+      </div>
+      <label class="ppt-mode-field">
+        处理方式
+        <select id="captureModeInput">
+          <option value="full" selected>完整截图：处理表格中的全部任务</option>
+          <option value="supplement">精准补充：只补缺失并下载修复版 ZIP</option>
         </select>
       </label>
-      <label class="wide-field">
-        截图画面
-        <select id="captureSizeModeInput">
-          <option value="current" selected>当前默认 1440×1200</option>
-          <option value="vertical">手机竖屏 9:16（720×1280）</option>
-          <option value="horizontal">横屏 16:9（1280×720）</option>
-          <option value="square">方图 1:1（1080×1080）</option>
-          <option value="custom">自定义宽高</option>
-        </select>
-      </label>
-      <label>
-        截图宽度
-        <input id="captureWidthInput" type="number" min="360" max="1920" step="10" value="1440" disabled>
-      </label>
-      <label>
-        截图高度
-        <input id="captureHeightInput" type="number" min="360" max="2160" step="10" value="1200" disabled>
-      </label>
-      <label class="wide-field checkbox-field">
-        <input id="screenshotWorkbookInput" type="checkbox">
-        <span>同时导出带截图列的 Excel（文件较大）</span>
-      </label>
+      <div id="supplementSourcePicker" class="supplement-source-picker">
+        <div class="ppt-source-title">选择已有截图文件夹，用于比对缺失文件</div>
+        <label class="ppt-source-action">
+          <input id="supplementFolderInput" type="file" webkitdirectory multiple>
+          <span>选择已有截图文件夹</span>
+        </label>
+      </div>
+      <div class="helper-list">
+        <div><strong>完整截图</strong><span>适合首次截图，会下载所有成功图片。</span></div>
+        <div><strong>精准补充</strong><span>适合重跑失败项，会合并原图与补拍图。</span></div>
+      </div>
+      <div id="supplementFolderInfo" class="muted">完整截图模式会处理 Excel 中全部任务；精准补充模式会按完整文件名找缺失截图。</div>
+    </section>
+
+    <section class="card step-card">
+      <div class="section-heading">
+        <span class="step-badge">3</span>
+        <div>
+          <div class="section-title">确认截图参数</div>
+          <p class="section-desc">默认参数适合小批量验证。遇到白屏、加载慢或抖音风控时，优先降低频率并增加等待。</p>
+        </div>
+      </div>
+      <div class="setting-group-title">速度与范围</div>
+      <div class="grid compact-grid">
+        <label>
+          并发标签页
+          <input id="concurrencyInput" type="number" min="1" max="8" value="2">
+        </label>
+        <label>
+          截图间隔秒
+          <input id="delayInput" type="number" min="0.5" max="10" step="0.5" value="0.8">
+        </label>
+        <label>
+          页面等待秒
+          <input id="waitInput" type="number" min="3" max="60" step="1" value="12">
+        </label>
+        <label>
+          最多处理条数
+          <input id="limitInput" type="number" min="0" step="1" placeholder="留空为全部">
+        </label>
+      </div>
+      <div class="setting-group-title">命名、窗口与导出</div>
+      <div class="grid compact-grid">
+        <label class="wide-field">
+          文件名前缀
+          <select id="sequenceModeInput">
+            <option value="sequence" selected>自动校正为全局连续序号</option>
+            <option value="row">严格使用 Excel 行号 - 1</option>
+          </select>
+        </label>
+        <label class="wide-field">
+          抖音截图窗口
+          <select id="douyinWindowModeInput">
+            <option value="regular" selected>普通专用窗口（默认，每 20 条重建）</option>
+            <option value="incognito">无痕窗口（需允许扩展在无痕模式下运行）</option>
+          </select>
+        </label>
+        <label class="wide-field checkbox-field">
+          <input id="douyinProxyRotationInput" type="checkbox">
+          <span>抖音每 20 条轮换 VPN IP（Clash 控制器）</span>
+        </label>
+        <div id="douyinProxyRotationPanel" class="wide-field vpn-rotation-panel">
+          <label>
+            控制器地址
+            <input id="douyinProxyControllerInput" type="text" value="http://127.0.0.1:9090">
+          </label>
+          <label>
+            策略组名
+            <input id="douyinProxyGroupInput" type="text" value="Proxy">
+          </label>
+          <label class="wide-field">
+            控制器密钥
+            <input id="douyinProxySecretInput" type="password" placeholder="与 config.yaml 的 secret 一致">
+          </label>
+          <label class="wide-field">
+            指定轮换节点
+            <textarea id="douyinProxyNodeNamesInput" rows="3" placeholder="逗号或换行分隔；留空则使用策略组全部可轮换节点">🇭🇰 香港 IEPL 08,🇭🇰 香港 IEPL 12,🇨🇳 台湾 IEPL 01,🇸🇬 新加坡 IEPL 01,🇯🇵 日本 IEPL 01,🇰🇷 韩国 IEPL 01</textarea>
+          </label>
+          <div class="wide-field vpn-rotation-hint">轮换周期固定为 20 条；如指定节点，出口 IP 未变化时会继续尝试下一个指定节点。</div>
+        </div>
+        <label class="wide-field">
+          截图画面
+          <select id="captureSizeModeInput">
+            <option value="current" selected>当前默认 1440×1200</option>
+            <option value="vertical">手机竖屏 9:16（720×1280）</option>
+            <option value="horizontal">横屏 16:9（1280×720）</option>
+            <option value="square">方图 1:1（1080×1080）</option>
+            <option value="custom">自定义宽高</option>
+          </select>
+        </label>
+        <label>
+          截图宽度
+          <input id="captureWidthInput" type="number" min="360" max="1920" step="10" value="1440" disabled>
+        </label>
+        <label>
+          截图高度
+          <input id="captureHeightInput" type="number" min="360" max="2160" step="10" value="1200" disabled>
+        </label>
+        <label class="wide-field checkbox-field">
+          <input id="screenshotWorkbookInput" type="checkbox">
+          <span>同时导出带截图列的 Excel（适合少量任务，文件会较大）</span>
+        </label>
+      </div>
     </section>
 
     <section class="notice">
-      截图期间会创建专用 Chrome 窗口，并在每次截图前自动拉回前台；普通插件无法真正后台截图或锁定置顶，请不要关闭该窗口。
+      截图会创建专用 Chrome 窗口，并在每次截图前自动拉回前台。请不要关闭或最小化该窗口；抖音任务会自动单并发执行，并默认每 20 条重建窗口。
     </section>
 
-    <section class="card controls">
-      <button id="startButton" class="primary" disabled>开始截图</button>
-      <button id="pauseButton" disabled>暂停</button>
-      <button id="resumeButton" disabled>继续</button>
-      <button id="stopButton" disabled>停止</button>
+    <section class="card step-card">
+      <div class="section-heading">
+        <span class="step-badge">PPT</span>
+        <div>
+          <div class="section-title">用截图生成 PPT</div>
+          <p class="section-desc">已下载好的截图 ZIP 或文件夹可以直接生成 PPT；单图单页模式会优先匹配已导入任务的链接信息。</p>
+        </div>
+      </div>
+      <label class="ppt-mode-field">
+        PPT 模式
+        <select id="pptModeInput">
+          <option value="clippings" selected>发布剪报多图铺页</option>
+          <option value="link-screenshot">链接截图单图单页</option>
+          <option value="release-info-screenshot">发布信息截图单图单页</option>
+        </select>
+      </label>
+      <label id="pptReleaseTitleField" class="ppt-title-field" hidden>
+        PPT 大标题
+        <textarea id="pptReleaseTitleInput" rows="2">2026年2月华为车BU-华为乾崑&amp;奕境马上有乾崑视频传播项目——AI扩散—社交媒体平台</textarea>
+      </label>
+      <div class="ppt-source-picker">
+        <div class="ppt-source-title">选择截图来源</div>
+        <div class="ppt-source-actions">
+          <label class="ppt-source-action">
+            <input id="pptZipInput" type="file" accept=".zip,application/zip,application/x-zip-compressed">
+            <span>选择 ZIP</span>
+          </label>
+          <label class="ppt-source-action">
+            <input id="pptFolderInput" type="file" webkitdirectory multiple>
+            <span>选择文件夹</span>
+          </label>
+        </div>
+      </div>
+      <div id="pptZipInfo" class="muted">选择模式后使用内置模板生成 PPT；支持 ZIP 压缩包或截图文件夹，插件内生成建议 ≤2000 张、ZIP ≤2GB。</div>
+      <button id="generatePptButton" class="primary wide-button" disabled>生成并下载 PPT</button>
+    </section>
+
+    <section class="card run-card">
+      <div class="section-heading">
+        <span class="step-badge">4</span>
+        <div>
+          <div class="section-title">开始执行</div>
+          <p class="section-desc">建议首次把“最多处理条数”设为 1 或 3，确认登录态、截图画面和下载路径正常后再全量运行。</p>
+        </div>
+      </div>
+      <label class="wide-field checkbox-field">
+        <input id="autoGeneratePptInput" type="checkbox" checked>
+        <span>截图完成后同时生成当前 PPT 模式（使用本次成功截图）</span>
+      </label>
+      <div class="controls">
+        <button id="startButton" class="primary" disabled>开始截图</button>
+        <button id="pauseButton" disabled>暂停</button>
+        <button id="resumeButton" disabled>继续</button>
+        <button id="stopButton" disabled>停止</button>
+      </div>
     </section>
 
     <section class="card stats">
@@ -88,18 +236,57 @@
       <div><strong id="successCount">0</strong><span>成功</span></div>
       <div><strong id="failedCount">0</strong><span>失败</span></div>
       <div><strong id="pendingCount">0</strong><span>待处理</span></div>
+      <div class="progress-panel">
+        <div class="progress-meta">
+          <span id="progressText">导入任务表后显示进度</span>
+          <strong id="progressPercent">0%</strong>
+        </div>
+        <div class="progress-track"><span id="progressFill"></span></div>
+      </div>
     </section>
 
     <section class="card">
       <div class="section-title">任务预览</div>
+      <p class="section-desc">这里会展示即将截图的前 20 条任务，便于检查平台、序号和文件名。</p>
       <div id="previewList" class="preview empty">暂无任务</div>
     </section>
 
     <section class="card">
-      <div class="section-title">运行日志</div>
+      <div class="log-heading">
+        <div class="section-title">运行日志</div>
+        <button id="copyLogButton" class="small-button" type="button" disabled>复制日志</button>
+      </div>
+      <p class="section-desc">解析结果、跳过原因、失败原因和导出状态都会记录在这里。</p>
       <div id="logList" class="logs"></div>
     </section>
+
+    <section class="card reflo-card">
+      <div class="reflo-card-top">
+        <label class="wide-field checkbox-field">
+          <input id="refloEnrichmentInput" type="checkbox">
+          <span>发布信息增强</span>
+        </label>
+        <div class="reflo-action-buttons">
+          <button id="excelCorrectionButton" class="small-button" type="button" disabled>Excel 纠错</button>
+          <button id="excelFixButton" class="small-button" type="button" disabled>Excel 修正</button>
+        </div>
+      </div>
+      <div id="refloEnrichmentPanel" class="reflo-enrichment-panel">
+        <input id="refloApiUrlInput" type="hidden">
+        <div id="refloEnrichmentInfo" class="wide-field reflo-enrichment-hint">仅发布信息 PPT 模式使用；失败回退表格字段。</div>
+        <div id="excelCorrectionPreview" class="excel-correction-preview" hidden></div>
+        <details class="wide-field reflo-internal-settings">
+          <summary>内部配置</summary>
+          <label class="wide-field">
+            API Token
+            <input id="refloApiTokenInput" type="password" placeholder="首次配置或 token 失效时填写">
+          </label>
+        </details>
+      </div>
+    </section>
   </main>
+  <script src="screenshot-cache.js"></script>
+  <script src="pptx-builder.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

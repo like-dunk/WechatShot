@@ -1,15 +1,16 @@
 {
   "manifest_version": 3,
-  "name": "视频号/头条号批量截图助手",
+  "name": "视频号/头条号/抖音/小红书批量截图助手",
   "version": "0.1.0",
-  "description": "在真实 Chrome 浏览器中批量打开视频号/头条号链接并截图下载。",
+  "description": "在真实 Chrome 浏览器中批量打开视频号/头条号/抖音/小红书链接并截图下载。",
+  "incognito": "spanning",
   "icons": {
     "16": "icons/icon-16.png",
     "48": "icons/icon-48.png",
     "128": "icons/icon-128.png"
   },
   "action": {
-    "default_title": "视频号/头条号批量截图助手",
+    "default_title": "视频号/头条号/抖音/小红书批量截图助手",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon-16.png",
@@ -36,7 +37,13 @@
         "https://channels.weixin.qq.com/*",
         "https://m.toutiao.com/*",
         "https://toutiao.com/*",
-        "https://www.toutiao.com/*"
+        "https://www.toutiao.com/*",
+        "https://v.douyin.com/*",
+        "https://douyin.com/*",
+        "https://www.douyin.com/*",
+        "https://xhslink.com/*",
+        "https://xiaohongshu.com/*",
+        "https://www.xiaohongshu.com/*"
       ],
       "js": [
         "content.js"
