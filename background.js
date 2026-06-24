@@ -208,7 +208,53 @@ async function handleMessage(message) {
   if (message.type === "RESUME") return resumeRun();
   if (message.type === "STOP") return stopRun();
   if (message.type === "DOWNLOAD_CORRECTED_WORKBOOK") return downloadCorrectedWorkbook(message);
+  if (message.type === "REFLO_RELEASE_INFO_BATCH") return fetchRefloReleaseInfoBatchInBackground(message);
   return { ok: false, error: "未知操作" };
+}
+
+// 在后台 service worker 中发起 Reflo API 请求。
+// MV3 下只有后台 worker 能凭借 host_permissions 绕过 CORS；popup 页面直接 fetch 会因服务器 CORS 白名单不含 chrome-extension:// 而抛出 "Failed to fetch"。
+async function fetchRefloReleaseInfoBatchInBackground(message) {
+  const apiUrl = message && message.apiUrl;
+  const token = message && message.token;
+  const payload = message && message.payload;
+  const timeoutMs = Number(message && message.timeoutMs) > 0 ? Number(message.timeoutMs) : 600000;
+  if (!apiUrl) return { ok: false, error: "Reflo API 地址未配置" };
+  if (!token) return { ok: false, error: "请先填写 Reflo API Token" };
+
+  const hasAbortController = typeof AbortController === "function";
+  const controller = hasAbortController ? new AbortController() : null;
+  let timer = null;
+  try {
+    if (controller && typeof setTimeout === "function") timer = setTimeout(() => controller.abort(), timeoutMs);
+    const init = {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload || {}),
+    };
+    if (controller) init.signal = controller.signal;
+    const response = await fetch(apiUrl, init);
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      // 5xx 多为网关/反向代理在 Reflo 后端重试期间超时返回（502/503/504），429 为限流；
+      // 这类属瞬时错误，标记 retryable 交由调用方按退避重试，避免把"正在重试"误判为最终失败。
+      const retryable = response.status >= 500 || response.status === 429;
+      return { ok: false, error: `Reflo API 请求失败：${response.status} ${response.statusText}${text ? `，${text.slice(0, 160)}` : ""}`, retryable, status: response.status };
+    }
+    const data = await response.json();
+    if (!data || !Array.isArray(data.items)) return { ok: false, error: "Reflo API 响应格式无效", retryable: false };
+    return { ok: true, data };
+  } catch (error) {
+    // 本端主动 abort（已等满 timeoutMs）说明服务端长时间无响应，再重试也会再等满，故不重试。
+    if (error && error.name === "AbortError") return { ok: false, error: `Reflo API 请求超时（${Math.round(timeoutMs / 1000)} 秒）`, retryable: false };
+    // 连接中断 / Failed to fetch 等网络层错误属瞬时故障，标记为可重试。
+    return { ok: false, error: `Reflo API 请求失败：${error && error.message ? error.message : "网络错误（Failed to fetch）"}`, retryable: true };
+  } finally {
+    if (timer !== null && typeof clearTimeout === "function") clearTimeout(timer);
+  }
 }
 
 async function getStateResponse() {
@@ -960,7 +1006,7 @@ function detectPlatformFromUrl(url) {
     const host = parsed.hostname.toLowerCase();
     const path = parsed.pathname.toLowerCase();
     if ((host === "weixin.qq.com" && path.startsWith("/sph/")) || host === "channels.weixin.qq.com") return "weixin";
-    if ((host === "m.toutiao.com" && path.startsWith("/is/")) || ((host === "toutiao.com" || host === "www.toutiao.com") && ["/article/", "/w/", "/video/"].some((prefix) => path.startsWith(prefix)))) return "toutiao";
+    if ((host === "m.toutiao.com" && ["/is/", "/video/"].some((prefix) => path.startsWith(prefix))) || ((host === "toutiao.com" || host === "www.toutiao.com") && ["/article/", "/w/", "/video/"].some((prefix) => path.startsWith(prefix)))) return "toutiao";
     if (host === "v.douyin.com" || ((host === "douyin.com" || host === "www.douyin.com") && ["/video/", "/note/"].some((prefix) => path.startsWith(prefix)))) return "douyin";
     if (host === "xhslink.com" || ((host === "xiaohongshu.com" || host === "www.xiaohongshu.com") && ["/explore/", "/discovery/item/"].some((prefix) => path.startsWith(prefix)))) return "xiaohongshu";
     return "";
@@ -1361,6 +1407,7 @@ function normalizeOptions(options, tasks = []) {
     autoGeneratePpt: options.autoGeneratePpt !== false,
     autoPptMode: normalizeAutoPptMode(options.autoPptMode),
     autoPptTitle: String(options.autoPptTitle || ""),
+    autoPptTemplateId: String(options.autoPptTemplateId || ""),
     enableSupplementRepairZip: Boolean(options.enableSupplementRepairZip),
     captureSize: normalizeCaptureSize(options),
   };
@@ -1375,7 +1422,7 @@ function resolveSupplementRepairSource(options, uploadId) {
 }
 
 function normalizeAutoPptMode(value) {
-  return value === "link-screenshot" || value === "release-info-screenshot" ? value : "clippings";
+  return value === "link-screenshot" || value === "release-info-screenshot" || value === "dawanqu" ? value : "clippings";
 }
 
 function normalizeDouyinWindowMode(value) {
@@ -1550,6 +1597,7 @@ async function markAutoPptFailed(error) {
 function getAutoPptModeLabel(value) {
   if (value === "link-screenshot") return "链接截图单图单页";
   if (value === "release-info-screenshot") return "发布信息截图单图单页";
+  if (value === "dawanqu") return "大湾区崭新模版";
   return "发布剪报多图铺页";
 }
 
@@ -1562,6 +1610,7 @@ async function saveAutoPptSessionFromState() {
       autoGeneratePpt: Boolean(state.options.autoGeneratePpt),
       autoPptMode: state.options.autoPptMode || "clippings",
       autoPptTitle: state.options.autoPptTitle || "",
+      autoPptTemplateId: state.options.autoPptTemplateId || "",
     },
     screenshots: buildSuccessScreenshotRecords(),
     autoPptGenerated: Boolean(state.autoPptGenerated),
@@ -1853,7 +1902,7 @@ function buildSessionDownloadDir(sourceFileName) {
   const timestamp = formatLocalTimestamp(new Date());
   const baseName = String(sourceFileName || "").replace(/\.[^.]+$/, "").replace(/[\\/:*?"<>|\r\n\t]+/g, "").trim();
   const suffix = baseName ? `_${baseName}` : "";
-  return `${DOWNLOAD_DIR_BASE}/${timestamp}${suffix}`;
+  return `${DOWNLOAD_DIR_BASE}/${timestamp}${suffix}_截图`;
 }
 
 function buildRunId() {
@@ -2014,8 +2063,8 @@ function buildSheetXml(rows, rowCount, columnCount, imageColumnStart, screenshot
       const value = row[columnIndex];
       const styleId = styleMap.get(`${rowIndex}:${columnIndex}`) || 0;
       if ((value == null || value === "") && !styleId) continue;
-      const styleAttr = styleId ? ` s="${styleId}"` : "";
-      cells.push(`<c r="${columnIndexToNameForXlsx(columnIndex)}${rowIndex + 1}"${styleAttr} t="inlineStr"><is><t>${xmlEscape(value)}</t></is></c>`);
+      const cellXml = buildCellXml(columnIndex, rowIndex, value, styleId);
+      cells.push(cellXml);
     }
     sheetRows.push(`<row r="${rowIndex + 1}" ht="${height}" customHeight="1">${cells.join("")}</row>`);
   }
@@ -2024,8 +2073,22 @@ function buildSheetXml(rows, rowCount, columnCount, imageColumnStart, screenshot
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><dimension ref="${dimension}"/>${columns}<sheetData>${sheetRows.join("")}</sheetData>${drawing}</worksheet>`;
 }
 
+function buildCellXml(columnIndex, rowIndex, value, styleId) {
+  const cellRef = `${columnIndexToNameForXlsx(columnIndex)}${rowIndex + 1}`;
+  const styleAttr = styleId ? ` s="${styleId}"` : "";
+
+  // Check if value is a number
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    // Numeric cell: <c r="A1"><v>12345</v></c>
+    return `<c r="${cellRef}"${styleAttr}><v>${value}</v></c>`;
+  }
+
+  // String cell (existing behavior): <c r="A1" t="inlineStr"><is><t>text</t></is></c>
+  return `<c r="${cellRef}"${styleAttr} t="inlineStr"><is><t>${xmlEscape(value)}</t></is></c>`;
+}
+
 function buildCorrectionStyleMap(rowStyles, cellStyles, columnCount) {
-  const styleIds = { red: 1, purple: 2, yellow: 3, blue: 4 };
+  const styleIds = { red: 1, purple: 2, yellow: 3, blue: 4, orange: 5 };
   const styleMap = new Map();
   rowStyles.forEach((entry) => {
     const rowIndex = Number(entry.rowIndex);
@@ -2047,7 +2110,7 @@ function buildCorrectionStyleMap(rowStyles, cellStyles, columnCount) {
 
 function buildStylesXml() {
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="11"/><color theme="1"/><name val="Arial"/><family val="2"/></font></fonts><fills count="6"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFC7CE"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE4D7FF"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFD9EAF7"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="5"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="0" fillId="2" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="4" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="5" borderId="0" xfId="0" applyFill="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="11"/><color theme="1"/><name val="Arial"/><family val="2"/></font></fonts><fills count="7"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFC7CE"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE4D7FF"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFD9EAF7"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFE0B2"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="6"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="0" fillId="2" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="4" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="5" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="6" borderId="0" xfId="0" applyFill="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
 }
 
 function buildSheetColumns(columnCount, imageColumnStart, screenshotColumnCount) {
