@@ -226,6 +226,36 @@ p {
   margin-top: 4px;
 }
 
+.file-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
+.link-button {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--primary);
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.link-button:hover {
+  opacity: 0.8;
+}
+
+.link-button:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  text-decoration: none;
+}
+
+.link-button[hidden] {
+  display: none;
+}
+
 .ppt-source-picker {
   border: 1px dashed #8bbcff;
   border-radius: 14px;
@@ -262,6 +292,18 @@ p {
 .ppt-title-field textarea {
   min-height: 56px;
   resize: vertical;
+}
+
+.ppt-template-upload {
+  margin-bottom: 10px;
+  padding: 12px;
+  border: 1px dashed #8bbcff;
+  border-radius: 14px;
+  background: #f5f9ff;
+}
+
+.ppt-template-upload .muted {
+  margin-top: 8px;
 }
 
 .ppt-source-title {
@@ -504,6 +546,11 @@ textarea {
   border-color: #fde68a;
 }
 
+.excel-correction-legend .orange {
+  background: #ffedd5;
+  border-color: #fed7aa;
+}
+
 .excel-correction-list {
   display: grid;
   gap: 4px;
@@ -529,6 +576,34 @@ textarea {
 
 .reflo-internal-settings label {
   margin-top: 8px;
+}
+
+.play-count-range-field {
+  margin-top: 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.play-count-range-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.play-count-range-inputs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.play-count-range-inputs label {
+  margin-top: 0;
+}
+
+.play-count-range-hint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .notice {

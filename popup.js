@@ -1,7 +1,7 @@
 const VIDEO_URL_PATTERNS = [
   /(?:https?|ttps?|tps|ps):\/\/weixin\.qq\.com\/sph\/[A-Za-z0-9_-]+/gi,
   /(?:https?|ttps?|tps|ps):\/\/channels\.weixin\.qq\.com\/[^\s"'<>，。；;、]+/gi,
-  /(?:https?|ttps?|tps|ps):\/\/m\.toutiao\.com\/is\/[A-Za-z0-9_-]+\/?/gi,
+  /(?:https?|ttps?|tps|ps):\/\/m\.toutiao\.com\/(?:is|video)\/[A-Za-z0-9_-]+\/?/gi,
   /(?:https?|ttps?|tps|ps):\/\/(?:www\.)?toutiao\.com\/(?:article|w|video)\/[^\s"'<>，。；;、]+/gi,
   /(?:https?|ttps?|tps|ps):\/\/v\.douyin\.com\/[A-Za-z0-9_-]+\/?/gi,
   /(?:https?|ttps?|tps|ps):\/\/(?:www\.)?douyin\.com\/(?:video|note)\/\d+[^\s"'<>，。；;、]*/gi,
@@ -38,9 +38,16 @@ const DOUYIN_BATCH_SIZE = 20;
 const DOUYIN_PROXY_ROTATION_INTERVAL = DOUYIN_BATCH_SIZE;
 const DOUYIN_PROXY_SETTINGS_KEY = "douyinProxyRotationSettings";
 const REFLO_ENRICHMENT_SETTINGS_KEY = "refloReleaseInfoSettings";
+const REFLO_CORRECTION_MEMORY_KEY = "refloReleaseInfoCorrectionMemory";
 const REFLO_DEFAULT_API_URL = "https://reflo-dashboard.pinhaojian.com/api/v1/plugin/release-info/batch";
 const REFLO_BATCH_SIZE = 50;
-const REFLO_REQUEST_TIMEOUT_MS = 45000;
+const REFLO_REQUEST_TIMEOUT_MS = 600000;
+// Reflo 后端遇到上游异常会自行重试，期间网关可能瞬时返回 5xx/429 或连接中断；
+// 这里在插件侧对后台标记为可重试（retryable）的错误做有限次指数退避重试，
+// 避免把"Reflo 正在重试"误判为最终失败。共 1 次初始 + 3 次重试，退避 2s/4s/8s。
+const REFLO_MAX_ATTEMPTS = 4;
+const REFLO_RETRY_BASE_DELAY_MS = 2000;
+const REFLO_RETRY_MAX_DELAY_MS = 15000;
 const CLASH_DEFAULT_CONTROLLER_URL = "http://127.0.0.1:9090";
 const CLASH_DEFAULT_GROUP_NAME = "Proxy";
 const DOUYIN_DEFAULT_PROXY_NODE_NAMES = "🇭🇰 香港 IEPL 08,🇭🇰 香港 IEPL 12,🇨🇳 台湾 IEPL 01,🇸🇬 新加坡 IEPL 01,🇯🇵 日本 IEPL 01,🇰🇷 韩国 IEPL 01";
@@ -57,6 +64,10 @@ const PPT_MODES = {
     label: "发布信息截图单图单页",
     info: "使用内置发布信息截图模板，每张截图生成一页；优先匹配已导入任务，并填充账号、平台、标题、链接和时间。",
   },
+  dawanqu: {
+    label: "大湾区崭新模版",
+    info: "使用大湾区崭新模版，每张截图生成一页；保留模版自带大标题与截图占位图，并填充账号、平台、标题、链接和时间。",
+  },
 };
 const SUPPLEMENT_IMAGE_PATTERN = /\.(?:png|jpe?g|webp)$/i;
 const SUPPLEMENT_ZIP_SOURCE_LIMIT = 500 * 1024 * 1024;
@@ -67,7 +78,15 @@ let currentState = null;
 let currentRows = null;
 let currentFileName = "";
 let currentImportAnalysis = null;
+let currentImportIsMerged = false;
+// 与 currentRows 行号对齐的「背景填充标记」：fillMarks[rowIndex]=true 表示该行有单元格颜色填充。
+// 仅 xlsx 能解析到填充信息；CSV 或无填充信息时为 null（此时「只处理背景标记行」选项会被忽略）。
+let currentImportFillMarks = null;
+// 已导入的任务表文件（按上传顺序累积）：[{ fileName, rows, fillMarks }]
+// 选择与拖拽都会追加到这里再统一合并，避免后一次导入覆盖前一次。
+let importedTaskFiles = [];
 let currentPptSource = null;
+let currentPptTemplate = null;
 let currentSupplementSource = null;
 let pptSourceReadToken = 0;
 let isGeneratingPpt = false;
@@ -80,6 +99,7 @@ let isExcelCorrecting = false;
 const elements = {
   fileInput: document.getElementById("fileInput"),
   fileInfo: document.getElementById("fileInfo"),
+  clearFilesButton: document.getElementById("clearFilesButton"),
   captureModeInput: document.getElementById("captureModeInput"),
   supplementSourcePicker: document.getElementById("supplementSourcePicker"),
   supplementFolderInput: document.getElementById("supplementFolderInput"),
@@ -88,11 +108,21 @@ const elements = {
   refloEnrichmentPanel: document.getElementById("refloEnrichmentPanel"),
   refloApiUrlInput: document.getElementById("refloApiUrlInput"),
   refloApiTokenInput: document.getElementById("refloApiTokenInput"),
+  playCountMinInput: document.getElementById("playCountMinInput"),
+  playCountMaxInput: document.getElementById("playCountMaxInput"),
   refloEnrichmentInfo: document.getElementById("refloEnrichmentInfo"),
+  excelCorrectionNoteInput: document.getElementById("excelCorrectionNoteInput"),
+  excelDateIncludeTimeInput: document.getElementById("excelDateIncludeTimeInput"),
+  excelOnlyMarkedRowsInput: document.getElementById("excelOnlyMarkedRowsInput"),
+  enrichFollowerInput: document.getElementById("enrichFollowerInput"),
   excelCorrectionButton: document.getElementById("excelCorrectionButton"),
   excelFixButton: document.getElementById("excelFixButton"),
   excelCorrectionPreview: document.getElementById("excelCorrectionPreview"),
   pptModeInput: document.getElementById("pptModeInput"),
+  pptTemplateSourceInput: document.getElementById("pptTemplateSourceInput"),
+  pptTemplateUpload: document.getElementById("pptTemplateUpload"),
+  pptTemplateInput: document.getElementById("pptTemplateInput"),
+  pptTemplateInfo: document.getElementById("pptTemplateInfo"),
   pptReleaseTitleField: document.getElementById("pptReleaseTitleField"),
   pptReleaseTitleInput: document.getElementById("pptReleaseTitleInput"),
   pptZipInput: document.getElementById("pptZipInput"),
@@ -137,13 +167,22 @@ init();
 
 function init() {
   elements.fileInput.addEventListener("change", handleFileChange);
+  if (elements.clearFilesButton) elements.clearFilesButton.addEventListener("click", clearImportedTaskFiles);
   elements.captureModeInput.addEventListener("change", handleCaptureModeChange);
   elements.supplementFolderInput.addEventListener("change", handleSupplementFolderChange);
   elements.refloEnrichmentInput.addEventListener("change", handleRefloSettingsChange);
+  elements.excelCorrectionNoteInput.addEventListener("change", saveRefloEnrichmentSettings);
+  elements.excelDateIncludeTimeInput.addEventListener("change", saveRefloEnrichmentSettings);
+  elements.excelOnlyMarkedRowsInput.addEventListener("change", saveRefloEnrichmentSettings);
+  elements.enrichFollowerInput.addEventListener("change", saveRefloEnrichmentSettings);
   elements.refloApiTokenInput.addEventListener("input", saveRefloEnrichmentSettings);
+  elements.playCountMinInput.addEventListener("input", saveRefloEnrichmentSettings);
+  elements.playCountMaxInput.addEventListener("input", saveRefloEnrichmentSettings);
   elements.excelCorrectionButton.addEventListener("click", runExcelCorrection);
   elements.excelFixButton.addEventListener("click", runExcelFix);
   elements.pptModeInput.addEventListener("change", handlePptModeChange);
+  elements.pptTemplateSourceInput.addEventListener("change", handlePptTemplateSourceChange);
+  elements.pptTemplateInput.addEventListener("change", handlePptTemplateChange);
   elements.pptZipInput.addEventListener("change", handlePptZipChange);
   elements.pptFolderInput.addEventListener("change", handlePptFolderChange);
   elements.generatePptButton.addEventListener("click", generatePpt);
@@ -185,8 +224,8 @@ function syncCaptureModeUi() {
 function setupUploadDropZones() {
   setupUploadDropZone(elements.fileInput.closest(".file-picker"), {
     input: elements.fileInput,
-    multiple: false,
-    onDrop: (files) => handleTaskFile(files[0]),
+    multiple: true,
+    onDrop: (files) => handleTaskFiles(files),
   });
   setupUploadDropZone(elements.supplementSourcePicker, {
     input: elements.supplementFolderInput,
@@ -202,6 +241,11 @@ function setupUploadDropZones() {
     input: elements.pptFolderInput,
     directory: true,
     onDrop: handlePptFolderFiles,
+  });
+  setupUploadDropZone(elements.pptTemplateInput.closest(".ppt-source-action"), {
+    input: elements.pptTemplateInput,
+    multiple: false,
+    onDrop: (files) => handlePptTemplateFile(files[0]),
   });
 }
 
@@ -309,31 +353,124 @@ function withRelativePath(file, relativePath) {
 }
 
 async function handleFileChange(event) {
-  const file = event.target.files && event.target.files[0];
-  await handleTaskFile(file);
+  const files = Array.from((event.target && event.target.files) || []);
+  await handleTaskFiles(files);
+  // 允许再次选择同一文件触发 change，并避免原生 input 残留状态干扰累积逻辑。
+  if (event.target) event.target.value = "";
 }
 
-async function handleTaskFile(file) {
-  if (!file) return;
+async function handleTaskFiles(files) {
+  const list = Array.from(files || []).filter((file) => file && file.name);
+  if (!list.length) return;
+  // 把本次选择/拖拽的文件追加到已导入列表，再整体重新解析合并。
+  // 同名文件视为更新：用新文件替换旧的，位置保持原顺序。
+  const incoming = [];
+  for (const file of list) {
+    let parsed;
+    try {
+      parsed = await parseInputFile(file);
+    } catch (error) {
+      addLog(`解析失败，已跳过「${file.name}」：${error.message}`, "failed");
+      continue;
+    }
+    incoming.push({ fileName: file.name, rows: parsed.rows, fillMarks: parsed.fillMarks });
+  }
+  if (!incoming.length) {
+    if (!importedTaskFiles.length) elements.fileInfo.textContent = "解析失败：没有可导入的有效表格";
+    return;
+  }
+  for (const entry of incoming) {
+    const existingIndex = importedTaskFiles.findIndex((item) => item.fileName === entry.fileName);
+    if (existingIndex >= 0) {
+      addLog(`已更新同名文件「${entry.fileName}」`, "warning");
+      importedTaskFiles[existingIndex] = entry;
+    } else {
+      importedTaskFiles.push(entry);
+    }
+  }
+  await applyImportedTaskFiles();
+}
+
+async function applyImportedTaskFiles() {
+  if (!importedTaskFiles.length) {
+    clearImportedTaskFiles();
+    return;
+  }
   try {
     setBadge("解析中", "running");
-    addLog(`开始解析：${file.name}`);
-    currentRows = await parseInputFile(file);
-    currentFileName = file.name;
-    applyParsedRows(currentRows, currentFileName, { logDiagnostics: true });
+    if (importedTaskFiles.length === 1) {
+      const only = importedTaskFiles[0];
+      addLog(`开始解析：${only.fileName}`);
+      currentRows = only.rows;
+      currentFileName = only.fileName;
+      currentImportIsMerged = false;
+      currentImportFillMarks = Array.isArray(only.fillMarks) ? only.fillMarks : null;
+      applyParsedRows(currentRows, currentFileName, { logDiagnostics: true, clearCorrectionMemory: true });
+      renderImportedFilesInfo();
+      return;
+    }
+    addLog(`开始合并解析 ${importedTaskFiles.length} 个文件：${importedTaskFiles.map((file) => file.fileName).join("、")}`);
+    const merged = mergeParsedFiles(importedTaskFiles);
+    currentRows = merged.rows;
+    currentFileName = merged.fileName;
+    currentImportIsMerged = true;
+    currentImportFillMarks = Array.isArray(merged.fillMarks) ? merged.fillMarks : null;
+    if (merged.realignedFiles.length) {
+      addLog(`已按表头对齐合并：${merged.realignedFiles.join("、")} 的列顺序与首个文件不同，已自动对齐`, "warning");
+    }
+    if (merged.appendedHeaders.length) {
+      addLog(`合并时新增列（取并集，保留数据）：${merged.appendedHeaders.join("、")}`, "warning");
+    }
+    addLog(`合并完成：共 ${importedTaskFiles.length} 个文件，${merged.dataRowCount} 条数据行，文件名取「${merged.fileName}」`, "success");
+    applyParsedRows(currentRows, currentFileName, { logDiagnostics: true, clearCorrectionMemory: true });
+    renderImportedFilesInfo();
   } catch (error) {
-    allParsedTasks = [];
-    parsedTasks = [];
-    currentRows = null;
-    currentFileName = "";
-    currentImportAnalysis = null;
-    elements.startButton.disabled = true;
-    elements.fileInfo.textContent = `解析失败：${error.message}`;
+    resetImportState();
+    importedTaskFiles = [];
+    elements.fileInfo.textContent = `合并解析失败：${error.message}`;
     renderPreview([]);
     renderCounts({ total: 0, success: 0, failed: 0, pending: 0 });
+    renderExcelCorrectionPreview(null);
+    clearExcelCorrectionMemory();
     setBadge("解析失败", "");
-    addLog(`解析失败：${error.message}`, "failed");
+    addLog(`合并解析失败：${error.message}`, "failed");
   }
+}
+
+function renderImportedFilesInfo() {
+  updateClearFilesButton();
+  if (importedTaskFiles.length <= 1) return;
+  const names = importedTaskFiles.map((file, index) => `${index + 1}.${file.fileName}`).join("　");
+  elements.fileInfo.textContent += `；已合并 ${importedTaskFiles.length} 个文件（${names}）。再次选择/拖拽将继续追加`;
+}
+
+function updateClearFilesButton() {
+  if (!elements.clearFilesButton) return;
+  elements.clearFilesButton.hidden = importedTaskFiles.length === 0;
+}
+
+function clearImportedTaskFiles() {
+  importedTaskFiles = [];
+  resetImportState();
+  elements.fileInfo.textContent = "等待导入任务表。可一次选择多个表格，按上传顺序合并。只生成“发布剪报多图铺页”PPT 时，可跳过这一步。";
+  renderPreview([]);
+  renderCounts({ total: 0, success: 0, failed: 0, pending: 0 });
+  renderExcelCorrectionPreview(null);
+  clearExcelCorrectionMemory();
+  setBadge("待导入", "");
+  if (elements.fileInput) elements.fileInput.value = "";
+  updateClearFilesButton();
+}
+
+function resetImportState() {
+  allParsedTasks = [];
+  parsedTasks = [];
+  currentRows = null;
+  currentFileName = "";
+  currentImportAnalysis = null;
+  currentImportIsMerged = false;
+  currentImportFillMarks = null;
+  elements.startButton.disabled = true;
 }
 
 async function handleSupplementFolderChange(event) {
@@ -379,11 +516,88 @@ function handlePptModeChange() {
 
 function syncPptModeUi() {
   const isReleaseInfoMode = elements.pptModeInput.value === "release-info-screenshot";
+  const isCustomTemplate = elements.pptTemplateSourceInput.value === "custom" && Boolean(currentPptTemplate);
+  // With a custom template the title box is preserved from the template itself,
+  // so the editable title field only applies to built-in templates.
+  const showTitleField = isReleaseInfoMode && !isCustomTemplate;
   if (elements.pptReleaseTitleField) {
-    elements.pptReleaseTitleField.hidden = !isReleaseInfoMode;
-    elements.pptReleaseTitleField.style.display = isReleaseInfoMode ? "" : "none";
+    elements.pptReleaseTitleField.hidden = !showTitleField;
+    elements.pptReleaseTitleField.style.display = showTitleField ? "" : "none";
   }
   updateRefloEnrichmentInfo();
+}
+
+function handlePptTemplateSourceChange() {
+  const isCustom = elements.pptTemplateSourceInput.value === "custom";
+  if (elements.pptTemplateUpload) {
+    elements.pptTemplateUpload.hidden = !isCustom;
+    elements.pptTemplateUpload.style.display = isCustom ? "" : "none";
+  }
+  if (!isCustom) {
+    currentPptTemplate = null;
+    if (elements.pptTemplateInput) elements.pptTemplateInput.value = "";
+  }
+  // In custom mode the mode is auto-detected from the uploaded template.
+  elements.pptModeInput.disabled = isCustom && Boolean(currentPptTemplate);
+  syncPptModeUi();
+  handlePptModeChange();
+}
+
+async function handlePptTemplateChange(event) {
+  await handlePptTemplateFile(event.target.files && event.target.files[0]);
+}
+
+async function handlePptTemplateFile(file) {
+  if (isGeneratingPpt) return;
+  currentPptTemplate = null;
+  elements.pptModeInput.disabled = false;
+  if (!file) {
+    elements.pptTemplateInfo.textContent = "上传 .pptx 模板后，插件会自动评估它与三种内置模式的匹配关系；发布信息类模板会保留顶部大标题和右侧截图占位图的位置。";
+    return;
+  }
+  try {
+    elements.pptTemplateInfo.textContent = `正在评估模板：${file.name}`;
+    addLog(`开始评估自定义 PPT 模板：${file.name}`);
+    const analysis = await window.PptxClippings.analyzeTemplateFile(file);
+    currentPptTemplate = { name: analysis.name, bytes: analysis.bytes, mode: analysis.mode, id: "" };
+    // Persist the template bytes so the post-run auto-PPT generator (which runs in a
+    // separate page / after the popup may have been closed) can reuse them. Failure to
+    // persist is non-fatal: manual generation still works from the in-memory bytes.
+    await persistCurrentPptTemplate();
+    elements.pptModeInput.value = analysis.mode;
+    elements.pptModeInput.disabled = true;
+    const modeLabel = (PPT_MODES[analysis.mode] || PPT_MODES.clippings).label;
+    elements.pptTemplateInfo.textContent = `已识别为「${modeLabel}」：${analysis.reason}（${analysis.slideCount} 页）`;
+    addLog(`自定义模板评估完成：${modeLabel} — ${analysis.reason}`, "success");
+    syncPptModeUi();
+    if (currentPptSource) {
+      elements.pptZipInfo.textContent = buildPptSourceInfo(currentPptSource.name, currentPptSource.imageCount);
+    }
+  } catch (error) {
+    currentPptTemplate = null;
+    elements.pptModeInput.disabled = false;
+    elements.pptTemplateInfo.textContent = `模板评估失败：${error.message}`;
+    addLog(`自定义 PPT 模板评估失败：${error.message}`, "failed");
+  }
+}
+
+// Stores the current custom template bytes into the template IndexedDB cache and
+// records the generated id on currentPptTemplate. Non-fatal on failure so that
+// manual generation keeps working from the in-memory bytes.
+async function persistCurrentPptTemplate() {
+  if (!currentPptTemplate || !currentPptTemplate.bytes || !window.TemplateCache) return;
+  try {
+    await window.TemplateCache.cleanupOldTemplates();
+    const id = await window.TemplateCache.putTemplate({
+      name: currentPptTemplate.name,
+      mode: currentPptTemplate.mode,
+      bytes: currentPptTemplate.bytes,
+    });
+    currentPptTemplate.id = id;
+  } catch (error) {
+    currentPptTemplate.id = "";
+    addLog(`自定义模板缓存失败，自动生成时将回退内置模板：${error.message}`, "warning");
+  }
 }
 
 async function handlePptZipChange(event) {
@@ -483,11 +697,17 @@ async function generatePpt() {
     const running = currentState && (currentState.status === "running" || currentState.status === "paused" || currentState.status === "stopping" || currentState.status === "finalizing");
     elements.pptZipInput.disabled = Boolean(running);
     elements.pptFolderInput.disabled = Boolean(running);
-    elements.pptModeInput.disabled = Boolean(running);
+    elements.pptModeInput.disabled = Boolean(running) || isPptModeLockedByTemplate();
+    if (elements.pptTemplateSourceInput) elements.pptTemplateSourceInput.disabled = Boolean(running);
+    if (elements.pptTemplateInput) elements.pptTemplateInput.disabled = Boolean(running);
     if (elements.pptReleaseTitleInput) elements.pptReleaseTitleInput.disabled = Boolean(running);
     elements.generatePptButton.disabled = Boolean(running) || !currentPptSource;
     elements.generatePptButton.textContent = "生成并下载 PPT";
   }
+}
+
+function isPptModeLockedByTemplate() {
+  return elements.pptTemplateSourceInput.value === "custom" && Boolean(currentPptTemplate);
 }
 
 function getCurrentPptMode() {
@@ -501,36 +721,49 @@ function shouldUseReleaseInfoEnrichmentForStart() {
     elements.refloEnrichmentInput.checked
     && elements.autoGeneratePptInput
     && elements.autoGeneratePptInput.checked
-    && elements.pptModeInput.value === "release-info-screenshot"
+    && isReleaseInfoLikeMode(elements.pptModeInput.value)
   );
 }
 
 function shouldEnrichReleaseInfoForManualPpt(modeValue) {
-  return Boolean(elements.refloEnrichmentInput.checked && modeValue === "release-info-screenshot");
+  return Boolean(elements.refloEnrichmentInput.checked && isReleaseInfoLikeMode(modeValue));
+}
+
+// Modes that fill the 发布账号/平台/标题/链接/时间 info fields and therefore
+// benefit from Reflo enrichment and per-task matching.
+function isReleaseInfoLikeMode(modeValue) {
+  return modeValue === "release-info-screenshot" || modeValue === "dawanqu";
 }
 
 async function buildPptByMode(source, modeValue, options = {}) {
   const matchingTasks = options.tasks || (allParsedTasks.length ? allParsedTasks : parsedTasks);
+  const templateBytes = options.templateBytes || (currentPptTemplate && currentPptTemplate.bytes) || undefined;
   if (modeValue === "link-screenshot") {
     return source.type === "zip"
-      ? window.PptxClippings.buildLinkScreenshotFromZipFile(source.file, matchingTasks)
-      : window.PptxClippings.buildLinkScreenshotFromImageFiles(source.files, source.name, matchingTasks);
+      ? window.PptxClippings.buildLinkScreenshotFromZipFile(source.file, matchingTasks, { templateBytes })
+      : window.PptxClippings.buildLinkScreenshotFromImageFiles(source.files, source.name, matchingTasks, { templateBytes });
   }
   if (modeValue === "release-info-screenshot") {
     const title = options.title != null ? options.title : elements.pptReleaseTitleInput ? elements.pptReleaseTitleInput.value : "";
     return source.type === "zip"
-      ? window.PptxClippings.buildReleaseInfoScreenshotFromZipFile(source.file, matchingTasks, { title })
-      : window.PptxClippings.buildReleaseInfoScreenshotFromImageFiles(source.files, source.name, matchingTasks, { title });
+      ? window.PptxClippings.buildReleaseInfoScreenshotFromZipFile(source.file, matchingTasks, { title, templateBytes })
+      : window.PptxClippings.buildReleaseInfoScreenshotFromImageFiles(source.files, source.name, matchingTasks, { title, templateBytes });
+  }
+  if (modeValue === "dawanqu") {
+    const title = options.title != null ? options.title : elements.pptReleaseTitleInput ? elements.pptReleaseTitleInput.value : "";
+    return source.type === "zip"
+      ? window.PptxClippings.buildDawanquFromZipFile(source.file, matchingTasks, { title, templateBytes })
+      : window.PptxClippings.buildDawanquFromImageFiles(source.files, source.name, matchingTasks, { title, templateBytes });
   }
   return source.type === "zip"
-    ? window.PptxClippings.buildFromZipFile(source.file)
-    : window.PptxClippings.buildFromImageFiles(source.files, source.name);
+    ? window.PptxClippings.buildFromZipFile(source.file, { templateBytes })
+    : window.PptxClippings.buildFromImageFiles(source.files, source.name, { templateBytes });
 }
 
 function buildPptSourceInfo(name, imageCount) {
   const mode = getCurrentPptMode();
   const matchingTaskCount = allParsedTasks.length || parsedTasks.length;
-  const taskText = (mode.value === "link-screenshot" || mode.value === "release-info-screenshot") && matchingTaskCount ? `，将优先匹配 ${matchingTaskCount} 条已导入任务` : "";
+  const taskText = (mode.value === "link-screenshot" || isReleaseInfoLikeMode(mode.value)) && matchingTaskCount ? `，将优先匹配 ${matchingTaskCount} 条已导入任务` : "";
   return `${name}，识别到 ${imageCount} 张图片，将生成${mode.label} PPT${taskText}`;
 }
 
@@ -540,6 +773,9 @@ function buildPptResultInfo(mode, result) {
   }
   if (mode.value === "release-info-screenshot") {
     return `已生成：${result.imageCount} 张图片，${result.slideCount} 页发布信息截图单图单页`;
+  }
+  if (mode.value === "dawanqu") {
+    return `已生成：${result.imageCount} 张图片，${result.slideCount} 页大湾区崭新模版`;
   }
   return `已生成：${result.imageCount} 张图片，${result.slideCount} 页发布剪报，每页 ${result.imagesPerSlide} 张，布局 ${result.grid}`;
 }
@@ -569,7 +805,10 @@ function applyParsedRows(rows, fileName, options = {}) {
   setBadge(parsedTasks.length ? "已就绪" : "无任务", parsedTasks.length ? "done" : "");
   if (currentPptSource) elements.pptZipInfo.textContent = buildPptSourceInfo(currentPptSource.name, currentPptSource.imageCount);
   if (currentSupplementSource) elements.supplementFolderInfo.textContent = buildSupplementSourceInfo();
-  renderExcelCorrectionPreview(null);
+  if (options.clearCorrectionMemory) {
+    renderExcelCorrectionPreview(null);
+    clearExcelCorrectionMemory();
+  }
   updateRefloEnrichmentInfo();
   if (options.logDiagnostics) renderImportDiagnostics(result.analysis);
   addLog(`解析完成：${allParsedTasks.length} 条任务${getCurrentCaptureMode() === "supplement" ? `，精准补充待处理 ${parsedTasks.length} 条` : ""}`, parsedTasks.length ? "success" : "warning");
@@ -603,6 +842,10 @@ function syncRefloEnrichmentUi(running = false) {
   elements.refloEnrichmentPanel.hidden = !enabled;
   elements.refloApiUrlInput.disabled = running || !enabled || isRefloEnriching;
   elements.refloApiTokenInput.disabled = running || !enabled || isRefloEnriching;
+  elements.playCountMinInput.disabled = running || !enabled || isRefloEnriching;
+  elements.playCountMaxInput.disabled = running || !enabled || isRefloEnriching;
+  elements.excelCorrectionNoteInput.disabled = running || isExcelCorrecting || !enabled;
+  elements.enrichFollowerInput.disabled = running || isExcelCorrecting || !enabled;
   syncExcelCorrectionUi(running);
   updateRefloEnrichmentInfo();
 }
@@ -624,8 +867,15 @@ async function loadRefloEnrichmentSettings() {
     elements.refloEnrichmentInput.checked = Boolean(settings.enabled);
     elements.refloApiUrlInput.value = REFLO_DEFAULT_API_URL;
     elements.refloApiTokenInput.value = settings.token || "";
+    elements.playCountMinInput.value = settings.playCountMin != null ? settings.playCountMin : "";
+    elements.playCountMaxInput.value = settings.playCountMax != null ? settings.playCountMax : "";
+    elements.excelCorrectionNoteInput.checked = settings.includeCorrectionNote !== false;
+    elements.excelDateIncludeTimeInput.checked = Boolean(settings.excelDateIncludeTime);
+    elements.excelOnlyMarkedRowsInput.checked = Boolean(settings.onlyMarkedRows);
+    elements.enrichFollowerInput.checked = Boolean(settings.enrichFollower);
   }
   syncRefloEnrichmentUi(currentState && (currentState.status === "running" || currentState.status === "paused" || currentState.status === "stopping" || currentState.status === "finalizing"));
+  loadExcelCorrectionMemory();
 }
 
 function saveRefloEnrichmentSettings() {
@@ -637,8 +887,21 @@ function getRefloEnrichmentSettings() {
     enabled: elements.refloEnrichmentInput.checked,
     apiUrl: REFLO_DEFAULT_API_URL,
     token: normalizeRefloApiToken(elements.refloApiTokenInput.value),
+    includeCorrectionNote: elements.excelCorrectionNoteInput.checked,
+    excelDateIncludeTime: elements.excelDateIncludeTimeInput.checked,
+    onlyMarkedRows: elements.excelOnlyMarkedRowsInput.checked,
+    enrichFollower: elements.enrichFollowerInput.checked,
+    playCountMin: parsePlayCountRangeValue(elements.playCountMinInput.value),
+    playCountMax: parsePlayCountRangeValue(elements.playCountMaxInput.value),
     autoEnrich: true,
   };
+}
+
+function parsePlayCountRangeValue(value) {
+  const text = String(value == null ? "" : value).trim();
+  if (!text) return null;
+  const number = Number(text);
+  return Number.isFinite(number) && number >= 0 ? Math.round(number) : null;
 }
 
 function normalizeRefloApiToken(value) {
@@ -655,7 +918,7 @@ function updateRefloEnrichmentInfo(message = "") {
     elements.refloEnrichmentInfo.textContent = "仅发布信息 PPT 模式使用。";
     return;
   }
-  if (elements.pptModeInput.value !== "release-info-screenshot") {
+  if (!isReleaseInfoLikeMode(elements.pptModeInput.value)) {
     elements.refloEnrichmentInfo.textContent = "当前 PPT 模式不会调用。";
     return;
   }
@@ -703,7 +966,9 @@ async function enrichTasksWithReflo(tasks, settings, options = {}) {
     for (let index = 0; index < batches.length; index += 1) {
       const batch = batches[index];
       updateRefloEnrichmentInfo(`正在获取发布信息：第 ${index + 1}/${batches.length} 批，${batch.length} 条...`);
-      const response = await fetchRefloReleaseInfoBatch(settings, batch);
+      const response = await fetchRefloReleaseInfoBatch(settings, batch, (attempt, maxAttempts, error, waitMs) => {
+        addLog(`Reflo 第 ${index + 1}/${batches.length} 批请求失败（第 ${attempt} 次，${error}），${Math.round(waitMs / 1000)} 秒后自动重试（共 ${maxAttempts - 1} 次）`, "warning");
+      });
       const result = mergeRefloReleaseInfo(batch, response);
       successCount += result.successCount;
       failedCount += result.failedCount;
@@ -749,10 +1014,17 @@ async function runExcelCorrectionWorkflow(options = {}) {
     if (!settings.token) throw new Error("请先填写发布信息增强 Token");
     isExcelCorrecting = true;
     syncRefloEnrichmentUi();
-    renderExcelCorrectionPreview({ status: "running", message: applyFixes ? "正在修正 Excel..." : "正在校验 Excel..." });
+    const runningReport = { status: "running", actionName, sourceFileName: currentFileName, message: applyFixes ? "正在修正 Excel..." : "正在校验 Excel..." };
+    renderExcelCorrectionPreview(runningReport);
+    await saveExcelCorrectionMemory(runningReport);
     addLog(`开始 Excel ${actionName}：检查链接、重复项并核对正确发布信息`);
-    const report = await buildExcelCorrectionReport(settings, { applyFixes });
+    const report = await buildExcelCorrectionReport(settings, { applyFixes, includeCorrectionNote: settings.includeCorrectionNote, includeTime: settings.excelDateIncludeTime, onlyMarkedRows: settings.onlyMarkedRows });
+    report.status = "done";
+    report.actionName = actionName;
+    report.sourceFileName = currentFileName;
+    report.completedAt = Date.now();
     renderExcelCorrectionPreview(report);
+    await saveExcelCorrectionMemory(report);
     const response = await sendMessage({
       type: "DOWNLOAD_CORRECTED_WORKBOOK",
       rows: report.exportRows,
@@ -765,7 +1037,9 @@ async function runExcelCorrectionWorkflow(options = {}) {
     if (!response || !response.ok) throw new Error(response && response.error ? response.error : `导出${actionName} Excel 失败`);
     addLog(`Excel ${actionName}完成：问题行 ${report.summary.issueRows}/${report.summary.checkedRows}${applyFixes ? `，已自动修正 ${report.summary.fixedCells} 处` : ""}，已触发下载`, report.summary.issueRows ? "warning" : "success");
   } catch (error) {
-    renderExcelCorrectionPreview({ status: "failed", message: error.message });
+    const failedReport = { status: "failed", actionName, sourceFileName: currentFileName, completedAt: Date.now(), message: error.message };
+    renderExcelCorrectionPreview(failedReport);
+    await saveExcelCorrectionMemory(failedReport);
     addLog(`Excel ${actionName}失败：${error.message}`, "failed");
   } finally {
     isExcelCorrecting = false;
@@ -775,24 +1049,80 @@ async function runExcelCorrectionWorkflow(options = {}) {
 
 async function buildExcelCorrectionReport(settings, options = {}) {
   const applyFixes = Boolean(options.applyFixes);
+  const includeCorrectionNote = options.includeCorrectionNote !== false;
+  const includeTime = Boolean(options.includeTime);
+  const onlyMarkedRows = Boolean(options.onlyMarkedRows);
   const rows = cloneRowsForCorrection(currentRows);
-  const analysis = currentImportAnalysis || analyzeImportRows(rows);
+  const analysis = { ...(currentImportAnalysis || analyzeImportRows(rows)) };
   const headerRowIndex = analysis.headerRowIndex;
-  const noteColumnIndex = applyFixes ? -1 : Math.max(1, getMaxColumnCount(rows));
-  if (!applyFixes) {
-    ensureCorrectionRow(rows, headerRowIndex);
-    rows[headerRowIndex][noteColumnIndex] = "纠错说明";
-  }
-  const rowReports = buildLocalCorrectionRows(rows, analysis, noteColumnIndex);
+  // 「只处理背景标记行」：仅当能解析到填充信息（xlsx）时生效；CSV 等无填充信息时忽略并提示。
+  // fillMarks 与 currentRows 行号对齐，rows 是其克隆且行号不变，故可直接按 rowIndex 判定。
+  const hasFillInfo = Array.isArray(currentImportFillMarks);
+  const restrictToMarked = onlyMarkedRows && hasFillInfo;
+  if (onlyMarkedRows && !hasFillInfo) addLog("当前文件无单元格填充信息（如 CSV），已忽略「只处理背景标记行」，按全部行处理", "warning");
+  const shouldIncludeRow = restrictToMarked ? (rowIndex) => Boolean(currentImportFillMarks[rowIndex]) : null;
+  // 多文件合并时，序号列重写为跨文件全局连续编号（1-200 + 201-400）；单文件保持原样不动。
+  const renumberedCount = currentImportIsMerged ? renumberSequenceColumn(rows, analysis) : 0;
+  if (renumberedCount > 0) addLog(`多文件合并：已将序号列重排为全局连续编号，共 ${renumberedCount} 行`, "success");
+  if (applyFixes) ensureExcelFixColumns(rows, analysis);
+  const rowReports = buildLocalCorrectionRows(rows, analysis, -1, shouldIncludeRow);
+  if (restrictToMarked) addLog(`只处理背景标记行：命中 ${rowReports.length} 个有背景填充的记录行`, rowReports.length ? "success" : "warning");
   const refloMap = await fetchRefloCorrectionInfo(settings, rowReports.filter((row) => row.primaryUrl));
   rowReports.forEach((rowReport) => applyRefloCorrection(rowReport, refloMap, rows, analysis));
+  // 账号重复用「正确账号」判定，须在 applyRefloCorrection 拿到 refloData 之后执行。
+  detectDuplicateAccounts(rowReports, analysis);
+
+  // 从 Reflo 返回的 anomaly 字段读取异常检测结果（后端已完成统计规则 + LLM 两层检测管道）
+  let anomalyTotal = 0;
+  let anomalyDetected = 0;
+  rowReports.forEach((rowReport) => {
+    if (!rowReport.refloData) return;
+    anomalyTotal += 1;
+    if (!rowReport.refloData.anomaly) return;
+    if (!rowReport.refloData.anomaly.detected) return;
+    anomalyDetected += 1;
+
+    const anomaly = rowReport.refloData.anomaly;
+    const preview =
+      rowReport.refloData.title.length > 30
+        ? rowReport.refloData.title.substring(0, 30) + "..."
+        : rowReport.refloData.title;
+    rowReport.issues.push({
+      type: "title-anomaly",
+      style: "orange",
+      columnIndex: analysis.publishTitleIndex,
+      message: `标题主题异常：「${preview}」- ${anomaly.reason}（AI 判断，置信度 ${Math.round(anomaly.confidence * 100)}%）`,
+    });
+  });
+  if (anomalyTotal > 0) {
+    addLog(`异常检测：${anomalyTotal} 条标题已由 Reflo 后端检测，其中 ${anomalyDetected} 条为异常`, anomalyDetected > 0 ? "warning" : "success");
+  }
+
+  // Add and populate metric columns
+  if (settings.enabled) {
+    ensureMetricColumns(rows, analysis, settings);
+    populateMetricColumns(rows, analysis, rowReports);
+    estimatePlayCountsForRange(rows, analysis, rowReports, settings);
+  }
+
+  // Calculate note column index AFTER adding metric columns
+  const noteColumnIndex = includeCorrectionNote ? Math.max(1, getMaxColumnCount(rows)) : -1;
+
   const fixedCells = applyFixes ? applyExcelFixes(rowReports, rows) : 0;
+  // 「精确到时分秒」开启时，先用 Reflo 的完整发布时间覆盖发布日期列（源序列号通常只有日期、没有时分秒，
+  // 时分秒只能来自 Reflo），再做整列归一化。
+  if (includeTime) applyRefloPublishTimeSeconds(rowReports, rows, analysis, applyFixes);
+  // 发布日期整列统一归一化：源文件可能把日期存成 Excel 序列号(如 46171)、文本日期或已被修正的值，
+  // 此前仅「修正」模式回填的行会被处理，未修正/纠错模式的行会原样导出序列号。这里对整列再做一次
+  // 归一化，确保序列号源、文本源、已改/未改行、纠错/修正两种模式统统输出为一致日期，消除“46171”。
+  normalizeExportPublishTimeColumn(rows, analysis, includeTime, shouldIncludeRow);
+  const correctionNoteRows = includeCorrectionNote ? buildCorrectionNoteRows(rowReports, applyFixes) : [];
   const rowStyles = [];
   const cellStyles = [];
   const issueRows = [];
   rowReports.forEach((rowReport) => {
-    if (!rowReport.issues.length) return;
-    if (!applyFixes) rows[rowReport.rowIndex][noteColumnIndex] = rowReport.issues.map((issue) => issue.message).join("；");
+    const unresolvedIssues = getUnresolvedCorrectionIssues(rowReport);
+    if (!unresolvedIssues.length) return;
     issueRows.push(rowReport);
     rowReport.issues.filter((issue) => issue.style === "blue" && issue.columnIndex >= 0).forEach((issue) => {
       cellStyles.push({ rowIndex: rowReport.rowIndex, columnIndex: issue.columnIndex, style: "blue" });
@@ -805,10 +1135,17 @@ async function buildExcelCorrectionReport(settings, options = {}) {
       rowStyles.push({ rowIndex: rowReport.rowIndex, style: "purple" });
       return;
     }
+    // Check for anomalous title (orange row style)
+    const hasAnomalousTitle = rowReport.issues.some((issue) => issue.type === "title-anomaly");
+    if (hasAnomalousTitle) {
+      rowStyles.push({ rowIndex: rowReport.rowIndex, style: "orange" });
+      return;
+    }
     rowReport.issues.filter((issue) => issue.style === "yellow" && issue.columnIndex >= 0 && !issue.fixed).forEach((issue) => {
       cellStyles.push({ rowIndex: rowReport.rowIndex, columnIndex: issue.columnIndex, style: "yellow" });
     });
   });
+  if (includeCorrectionNote && correctionNoteRows.length) writeCorrectionNotes(rows, headerRowIndex, noteColumnIndex, correctionNoteRows);
   const summary = {
     checkedRows: rowReports.length,
     issueRows: issueRows.length,
@@ -816,6 +1153,7 @@ async function buildExcelCorrectionReport(settings, options = {}) {
     duplicateRows: rowReports.filter((row) => row.hasDuplicateLink).length,
     duplicateAccountCells: rowReports.reduce((total, row) => total + row.issues.filter((issue) => issue.style === "blue").length, 0),
     fieldMismatches: rowReports.reduce((total, row) => total + row.issues.filter((issue) => issue.style === "yellow").length, 0),
+    anomalousTitleRows: rowReports.filter((row) => row.issues.some((issue) => issue.type === "title-anomaly")).length,
     fixedCells,
   };
   return {
@@ -828,6 +1166,40 @@ async function buildExcelCorrectionReport(settings, options = {}) {
   };
 }
 
+function getUnresolvedCorrectionIssues(rowReport) {
+  return (rowReport.issues || []).filter((issue) => !issue.fixed);
+}
+
+function getCorrectionNoteIssues(rowReport, includeFixedIssues = false) {
+  const issues = rowReport && Array.isArray(rowReport.issues) ? rowReport.issues : [];
+  return includeFixedIssues ? issues : issues.filter((issue) => !issue.fixed);
+}
+
+function buildCorrectionNoteRows(rowReports, includeFixedIssues = false) {
+  return (Array.isArray(rowReports) ? rowReports : []).map((rowReport) => ({
+    rowReport,
+    issues: getCorrectionNoteIssues(rowReport, includeFixedIssues),
+  })).filter((entry) => entry.issues.length);
+}
+
+function writeCorrectionNotes(rows, headerRowIndex, noteColumnIndex, noteRows) {
+  ensureCorrectionRow(rows, headerRowIndex);
+  rows[headerRowIndex][noteColumnIndex] = "纠错说明";
+  noteRows.forEach((entry) => {
+    ensureCorrectionRow(rows, entry.rowReport.rowIndex);
+    rows[entry.rowReport.rowIndex][noteColumnIndex] = buildCorrectionIssueExportText(entry.issues);
+  });
+}
+
+function buildCorrectionIssueExportText(issues) {
+  return (Array.isArray(issues) ? issues : []).map(getCorrectionIssueExportMessage).filter(Boolean).join("；");
+}
+
+function getCorrectionIssueExportMessage(issue) {
+  if (!issue || issue.style !== "red") return issue && issue.message ? issue.message : "";
+  return "链接失效";
+}
+
 function cloneRowsForCorrection(rows) {
   return (Array.isArray(rows) ? rows : []).map((row) => Array.isArray(row) ? row.map((value) => value == null ? "" : String(value)) : []);
 }
@@ -836,13 +1208,171 @@ function ensureCorrectionRow(rows, rowIndex) {
   while (rows.length <= rowIndex) rows.push([]);
 }
 
-function buildLocalCorrectionRows(rows, analysis, noteColumnIndex) {
+function ensureExcelFixColumns(rows, analysis) {
+  ensureExcelFixColumn(rows, analysis, "publishAccountIndex", "发布账号");
+  ensureExcelFixColumn(rows, analysis, "publishTimeIndex", "发布日期");
+  ensureExcelFixColumn(rows, analysis, "publishPlatformIndex", "发布平台");
+  ensureExcelFixColumn(rows, analysis, "publishTitleIndex", "发布标题");
+}
+
+function ensureExcelFixColumn(rows, analysis, analysisKey, headerLabel) {
+  if (analysis[analysisKey] >= 0) return;
+  const columnIndex = findEmptyCorrectionColumnIndex(rows, analysis.headerRowIndex);
+  ensureCorrectionRow(rows, analysis.headerRowIndex);
+  rows[analysis.headerRowIndex][columnIndex] = headerLabel;
+  analysis[analysisKey] = columnIndex;
+}
+
+function findEmptyCorrectionColumnIndex(rows, headerRowIndex) {
+  const columnCount = Math.max(1, getMaxColumnCount(rows));
+  for (let columnIndex = 0; columnIndex < columnCount; columnIndex += 1) {
+    const hasValue = rows.some((row, rowIndex) => rowIndex >= headerRowIndex && normalizeTaskText((row || [])[columnIndex]));
+    if (!hasValue) return columnIndex;
+  }
+  return columnCount;
+}
+
+function formatMetricForExcel(value) {
+  if (value == null || value === "") return "";
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : "";
+}
+
+function findMetricColumnInsertionIndex(rows, analysis) {
+  // Find the rightmost publish column
+  const publishIndices = [
+    analysis.publishAccountIndex,
+    analysis.publishPlatformIndex,
+    analysis.publishTitleIndex,
+    analysis.publishLinkIndex,
+    analysis.publishTimeIndex
+  ].filter(index => index >= 0);
+
+  if (publishIndices.length === 0) {
+    // No publish columns found, insert after link column
+    return analysis.linkIndex + 1;
+  }
+
+  // Insert after the rightmost publish column
+  return Math.max(...publishIndices) + 1;
+}
+
+function ensureMetricColumns(rows, analysis, settings) {
+  if (!settings.enabled) return; // Only add if Reflo enrichment enabled
+
+  // Find insertion point (after publish columns, before correction note)
+  const insertionIndex = findMetricColumnInsertionIndex(rows, analysis);
+
+  // Store indices in analysis object for later use
+  analysis.playCountIndex = insertionIndex;
+  analysis.diggCountIndex = insertionIndex + 1;
+  analysis.commentCountIndex = insertionIndex + 2;
+  analysis.collectCountIndex = insertionIndex + 3;
+  analysis.shareCountIndex = insertionIndex + 4;
+
+  // Add headers to header row
+  ensureCorrectionRow(rows, analysis.headerRowIndex);
+  rows[analysis.headerRowIndex][analysis.playCountIndex] = "播放量";
+  rows[analysis.headerRowIndex][analysis.diggCountIndex] = "点赞数";
+  rows[analysis.headerRowIndex][analysis.commentCountIndex] = "评论量";
+  rows[analysis.headerRowIndex][analysis.collectCountIndex] = "收藏量";
+  rows[analysis.headerRowIndex][analysis.shareCountIndex] = "分享数";
+
+  if (settings.enrichFollower) {
+    analysis.followerCountIndex = insertionIndex + 5;
+    rows[analysis.headerRowIndex][analysis.followerCountIndex] = "粉丝数";
+  }
+}
+
+function populateMetricColumns(rows, analysis, rowReports) {
+  if (analysis.playCountIndex === undefined) return; // Columns not added
+
+  rowReports.forEach((rowReport) => {
+    if (!rowReport.refloData) return; // No Reflo data for this row
+
+    const row = rows[rowReport.rowIndex] || [];
+    ensureCorrectionRow(rows, rowReport.rowIndex);
+
+    // All metrics from Reflo data
+    row[analysis.playCountIndex] = formatMetricForExcel(rowReport.refloData.playCount);
+    row[analysis.diggCountIndex] = formatMetricForExcel(rowReport.refloData.diggCount);
+    row[analysis.commentCountIndex] = formatMetricForExcel(rowReport.refloData.commentCount);
+    row[analysis.collectCountIndex] = formatMetricForExcel(rowReport.refloData.collectCount);
+    row[analysis.shareCountIndex] = formatMetricForExcel(rowReport.refloData.shareCount);
+    if (analysis.followerCountIndex !== undefined) {
+      row[analysis.followerCountIndex] = formatMetricForExcel(rowReport.refloData.followerCount);
+    }
+  });
+}
+
+// 视频号 / 小红书 抓不到真实播放量：按 Reflo 返回的互动总量（点赞+评论+收藏+分享）
+// 在用户给定的 [min, max] 区间内从高到低线性映射，互动最高取最大值，依次递减。
+function estimatePlayCountsForRange(rows, analysis, rowReports, settings) {
+  if (analysis.playCountIndex === undefined) return; // Columns not added
+  const min = settings.playCountMin;
+  const max = settings.playCountMax;
+  if (min == null || max == null) return; // 范围留空则不估算
+  const rangeMin = Math.min(min, max);
+  const rangeMax = Math.max(min, max);
+
+  const candidates = rowReports
+    .filter((rowReport) => rowReport.refloData && isPlayCountEstimatePlatform(rowReport) && !hasRealPlayCount(rowReport.refloData))
+    .map((rowReport) => ({ rowReport, engagement: getRefloEngagementSum(rowReport.refloData) }));
+  if (!candidates.length) return;
+
+  const engagements = candidates.map((entry) => entry.engagement);
+  const minEngagement = Math.min(...engagements);
+  const maxEngagement = Math.max(...engagements);
+  const span = maxEngagement - minEngagement;
+
+  candidates.forEach((entry) => {
+    let estimated;
+    if (span <= 0) {
+      // 所有行互动相同：有互动时给最大值，全为 0 时给最小值
+      estimated = maxEngagement > 0 ? rangeMax : rangeMin;
+    } else {
+      const ratio = (entry.engagement - minEngagement) / span;
+      estimated = rangeMin + ratio * (rangeMax - rangeMin);
+    }
+    const value = Math.round(estimated);
+    ensureCorrectionRow(rows, entry.rowReport.rowIndex);
+    const row = rows[entry.rowReport.rowIndex];
+    row[analysis.playCountIndex] = value;
+  });
+}
+
+function isPlayCountEstimatePlatform(rowReport) {
+  const platform = getUrlPlatform(rowReport.primaryUrl);
+  if (platform === "weixin" || platform === "xiaohongshu") return true;
+  // 兜底：链接无法解析时用 Reflo 返回的平台标签判断
+  const label = rowReport.refloData ? rowReport.refloData.platform : "";
+  return label === "视频号" || label === "小红书";
+}
+
+function getRefloEngagementSum(refloData) {
+  if (!refloData) return 0;
+  return ["diggCount", "commentCount", "collectCount", "shareCount"].reduce((total, key) => {
+    const number = Number(refloData[key]);
+    return total + (Number.isFinite(number) && number > 0 ? number : 0);
+  }, 0);
+}
+
+function hasRealPlayCount(refloData) {
+  if (!refloData) return false;
+  const number = Number(refloData.playCount);
+  return Number.isFinite(number) && number > 0;
+}
+
+// shouldIncludeRow 为可选谓词：返回 false 的行不参与纠错（用于「只处理背景标记行」），
+// 未传时处理全部数据行。被跳过的行不进入 rowReports，因此不参与查重、回填、标色与纠错说明。
+function buildLocalCorrectionRows(rows, analysis, noteColumnIndex, shouldIncludeRow = null) {
   const duplicateMap = new Map();
-  const duplicateAccountMap = new Map();
   const rowReports = [];
   for (let rowIndex = analysis.headerRowIndex + 1; rowIndex < rows.length; rowIndex += 1) {
     const row = rows[rowIndex] || [];
     if (!hasCellValue(row)) continue;
+    if (isCorrectionSummaryRow(row)) continue;
+    if (shouldIncludeRow && !shouldIncludeRow(rowIndex)) continue;
     ensureCorrectionRow(rows, rowIndex);
     const urls = extractVideoUrls(row[analysis.linkIndex]);
     const normalizedUrls = urls.map(normalizeCorrectionLink).filter(Boolean);
@@ -856,8 +1386,8 @@ function buildLocalCorrectionRows(rows, analysis, noteColumnIndex) {
       hasInvalidLink: false,
       hasDuplicateLink: false,
     };
-    const accountValue = analysis.publishAccountIndex >= 0 ? normalizeTaskText(row[analysis.publishAccountIndex]) : "";
-    const normalizedAccount = normalizeStrictCompareText(accountValue);
+    // 留存原始账号值；账号重复改为在 Reflo 应用后用「正确账号」判定（见 detectDuplicateAccounts）。
+    report.accountValue = analysis.publishAccountIndex >= 0 ? normalizeTaskText(row[analysis.publishAccountIndex]) : "";
     if (!urls.length) {
       report.hasInvalidLink = true;
       report.issues.push({ type: "invalid-link", style: "red", message: "链接列无法提取支持平台发布链接" });
@@ -866,10 +1396,6 @@ function buildLocalCorrectionRows(rows, analysis, noteColumnIndex) {
       if (!duplicateMap.has(url)) duplicateMap.set(url, []);
       duplicateMap.get(url).push(report);
     });
-    if (normalizedAccount) {
-      if (!duplicateAccountMap.has(normalizedAccount)) duplicateAccountMap.set(normalizedAccount, { accountValue, reports: [] });
-      duplicateAccountMap.get(normalizedAccount).reports.push(report);
-    }
     rowReports.push(report);
   }
   duplicateMap.forEach((reports, url) => {
@@ -878,6 +1404,22 @@ function buildLocalCorrectionRows(rows, analysis, noteColumnIndex) {
       report.hasDuplicateLink = true;
       report.issues.push({ type: "duplicate-link", style: "purple", message: `重复链接：${url}` });
     });
+  });
+  return rowReports;
+}
+
+// 账号重复检测：必须在 Reflo 应用之后调用，用「正确账号」（reflo.data.account）判重；
+// 拿不到 Reflo 数据的行回退用 Excel 原始账号值。这样判重基准与导出后单元格展示的值一致，
+// 避免「原始值不同但回填后相同」或「原始值相同但回填后不同」导致的漏标/错标。
+function detectDuplicateAccounts(rowReports, analysis) {
+  if (analysis.publishAccountIndex < 0) return;
+  const duplicateAccountMap = new Map();
+  rowReports.forEach((report) => {
+    const correctAccount = (report.refloData && report.refloData.account) || report.accountValue || "";
+    const key = normalizeStrictCompareText(correctAccount);
+    if (!key) return;
+    if (!duplicateAccountMap.has(key)) duplicateAccountMap.set(key, { accountValue: correctAccount, reports: [] });
+    duplicateAccountMap.get(key).reports.push(report);
   });
   duplicateAccountMap.forEach((entry) => {
     if (entry.reports.length < 2) return;
@@ -890,7 +1432,6 @@ function buildLocalCorrectionRows(rows, analysis, noteColumnIndex) {
       });
     });
   });
-  return rowReports;
 }
 
 function normalizeCorrectionLink(url) {
@@ -908,10 +1449,17 @@ async function fetchRefloCorrectionInfo(settings, rowReports) {
   const batches = chunkArray(tasks, REFLO_BATCH_SIZE);
   for (let index = 0; index < batches.length; index += 1) {
     renderExcelCorrectionPreview({ status: "running", message: `正在校验正确发布信息：第 ${index + 1}/${batches.length} 批...` });
-    const response = await fetchRefloReleaseInfoBatch(settings, batches[index]);
-    (response.items || []).forEach((item) => {
+    const response = await fetchRefloReleaseInfoBatch(settings, batches[index], (attempt, _maxAttempts, _error, waitMs) => {
+      renderExcelCorrectionPreview({ status: "running", message: `第 ${index + 1}/${batches.length} 批请求失败（第 ${attempt} 次），${Math.round(waitMs / 1000)} 秒后自动重试...` });
+    });
+    (response.items || []).forEach((item, itemIdx) => {
       const rowReport = taskMap.get(item && item.id);
       if (!rowReport) return;
+      // 临时诊断日志：打印第一个包含 anomaly 的 item，确认 Reflo 返回的数据结构
+      if (itemIdx === 0 && item && item.data) {
+        console.log("[anomaly-debug] 首个 item.data 的 key:", Object.keys(item.data));
+        console.log("[anomaly-debug] item.data.anomaly:", JSON.stringify(item.data.anomaly));
+      }
       result.set(rowReport.rowIndex, item && item.ok && item.data ? { ok: true, data: normalizeRefloReleaseInfo(item.data) } : { ok: false, error: item && item.error ? item.error : "未获取到正确发布信息" });
     });
   }
@@ -929,6 +1477,10 @@ function applyRefloCorrection(rowReport, refloMap, rows, analysis) {
     rowReport.issues.push({ type: "reflo-missing", style: "red", message: `链接无法获取正确发布信息${reflo && reflo.error ? `：${reflo.error}` : ""}` });
     return;
   }
+
+  // Store complete Reflo data for later metric extraction
+  rowReport.refloData = reflo.data;
+
   const row = rows[rowReport.rowIndex] || [];
   compareCorrectionField(rowReport, row, analysis.publishTimeIndex, "发布日期", normalizePublishTime(row[analysis.publishTimeIndex]), normalizePublishTime(reflo.data.time), reflo.data.time);
   compareCorrectionField(rowReport, row, analysis.publishTitleIndex, "发布标题", normalizeStrictCompareText(row[analysis.publishTitleIndex]), normalizeStrictCompareText(reflo.data.title), reflo.data.title);
@@ -969,11 +1521,12 @@ function getCorrectionReferenceLabel(label) {
 function applyExcelFixes(rowReports, rows) {
   let fixedCells = 0;
   rowReports.forEach((rowReport) => {
-    if (rowReport.hasInvalidLink || rowReport.hasDuplicateLink) return;
+    // 失效链接拿不到 Reflo 数据，黄色字段没有 fixValue，无值可回填，整行跳过。
+    // 重复链接指向同一条内容，其账号/日期/标题/平台是 Reflo 按链接取回的同一份真实数据，
+    // 照常回填才能保证导出结果准确（重复本身仍由紫色整行 + 纠错说明保留提示）。
+    if (rowReport.hasInvalidLink) return;
     const row = rows[rowReport.rowIndex] || [];
-    const manualColumns = new Set(rowReport.issues.filter((issue) => issue.type === "duplicate-account" && issue.columnIndex >= 0).map((issue) => issue.columnIndex));
     rowReport.issues.filter((issue) => issue.style === "yellow" && issue.columnIndex >= 0 && issue.fixValue).forEach((issue) => {
-      if (manualColumns.has(issue.columnIndex)) return;
       row[issue.columnIndex] = issue.fixValue;
       issue.fixed = true;
       issue.message = `${issue.message}；已自动修正`;
@@ -981,6 +1534,27 @@ function applyExcelFixes(rowReports, rows) {
     });
   });
   return fixedCells;
+}
+
+// 「Excel 日期精确到时分秒」开启时，用 Reflo 返回的完整发布时间（含时分秒）覆盖发布日期列。
+// 比对仍按天级，避免秒级差异把每行误判为不一致；这里只负责把权威的精确时间写进导出单元格：
+//   - 修正模式：所有取到 Reflo 数据的行都写成 Reflo 的精确时间（与「以 Reflo 为准」的修正语义一致）；
+//   - 纠错模式：仅对「日期天级一致、未被标记不一致」的行补上时分秒（同一天、只加时间，属展示增强，
+//     不改写被标记为不一致的行，保持纠错「只检查不修改日期」的语义）。
+function applyRefloPublishTimeSeconds(rowReports, rows, analysis, applyFixes) {
+  const columnIndex = analysis.publishTimeIndex;
+  if (columnIndex < 0) return;
+  rowReports.forEach((rowReport) => {
+    if (rowReport.hasInvalidLink) return;
+    const refloTime = rowReport.refloData && rowReport.refloData.timeWithSeconds;
+    if (!refloTime) return;
+    // Reflo 只给到天时不覆盖，避免把源单元格里本就带的时分秒「降级」抹掉（此时交给整列归一化保留源时间）。
+    if (!/\d:\d/.test(refloTime)) return;
+    const hasDateMismatch = rowReport.issues.some((issue) => issue.columnIndex === columnIndex && issue.style === "yellow");
+    if (!applyFixes && hasDateMismatch) return;
+    const row = rows[rowReport.rowIndex];
+    if (Array.isArray(row)) row[columnIndex] = refloTime;
+  });
 }
 
 function normalizeStrictCompareText(value) {
@@ -1003,7 +1577,8 @@ function renderExcelCorrectionPreview(report) {
   }
   elements.excelCorrectionPreview.hidden = false;
   if (report.status === "running" || report.status === "failed") {
-    elements.excelCorrectionPreview.textContent = report.status === "failed" ? `纠错失败：${report.message}` : report.message;
+    const actionName = report.actionName || "纠错";
+    elements.excelCorrectionPreview.textContent = report.status === "failed" ? `${actionName}失败：${report.message}` : report.message;
     return;
   }
   const previewItems = report.previewItems || [];
@@ -1015,16 +1590,19 @@ function renderExcelCorrectionPreview(report) {
       <span>紫色 ${report.summary.duplicateRows} 行</span>
       <span>蓝色 ${report.summary.duplicateAccountCells} 处</span>
       <span>黄色 ${report.summary.fieldMismatches} 处</span>
+      <span>橙色 ${report.summary.anomalousTitleRows || 0} 行</span>
       <span>已修正 ${report.summary.fixedCells} 处</span>
     </div>
     <div class="excel-correction-legend">
-      <span class="red">红：链接无法获取</span>
-      <span class="purple">紫：重复链接</span>
+      <span class="red">红：链接失效（整行）</span>
+      <span class="purple">紫：重复链接（整行）</span>
       <span class="blue">蓝：账号重复</span>
       <span class="yellow">黄：字段不一致</span>
+      <span class="orange">橙：主题异常（整行）</span>
     </div>
     <div class="excel-correction-list"></div>
   `;
+  renderExcelCorrectionMeta(report);
   const list = elements.excelCorrectionPreview.querySelector(".excel-correction-list");
   if (!previewItems.length) {
     list.textContent = "未发现问题，已导出检查结果。";
@@ -1038,38 +1616,126 @@ function renderExcelCorrectionPreview(report) {
   });
 }
 
-async function fetchRefloReleaseInfoBatch(settings, tasks) {
+function renderExcelCorrectionMeta(report) {
+  if (!report || (!report.actionName && !report.sourceFileName && !report.completedAt)) return;
+  const meta = document.createElement("div");
+  meta.className = "excel-correction-item";
+  const parts = [];
+  if (report.actionName) parts.push(`${report.restored ? "上次" : ""}${report.actionName}报告`);
+  if (report.sourceFileName) parts.push(report.sourceFileName);
+  if (report.completedAt) parts.push(formatExcelCorrectionMemoryTime(report.completedAt));
+  meta.textContent = parts.join(" · ");
+  elements.excelCorrectionPreview.insertBefore(meta, elements.excelCorrectionPreview.firstChild);
+}
+
+function formatExcelCorrectionMemoryTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("zh-CN", { hour12: false });
+}
+
+async function loadExcelCorrectionMemory() {
+  const memory = await readStorageValue(REFLO_CORRECTION_MEMORY_KEY);
+  if (!memory || typeof memory !== "object") return;
+  const report = normalizeExcelCorrectionMemory(memory);
+  if (!report) return;
+  renderExcelCorrectionPreview(report);
+}
+
+function saveExcelCorrectionMemory(report) {
+  const memory = buildExcelCorrectionMemory(report);
+  if (!memory) return;
+  return writeStorageValue(REFLO_CORRECTION_MEMORY_KEY, memory);
+}
+
+function clearExcelCorrectionMemory() {
+  return removeStorageValue(REFLO_CORRECTION_MEMORY_KEY);
+}
+
+function buildExcelCorrectionMemory(report) {
+  if (!report || typeof report !== "object") return null;
+  return {
+    status: report.status || "done",
+    actionName: report.actionName || "",
+    sourceFileName: report.sourceFileName || "",
+    completedAt: report.completedAt || Date.now(),
+    message: report.message || "",
+    summary: sanitizeExcelCorrectionSummary(report.summary),
+    previewItems: sanitizeExcelCorrectionPreviewItems(report.previewItems),
+  };
+}
+
+function normalizeExcelCorrectionMemory(memory) {
+  const status = memory.status === "running" ? "failed" : memory.status;
+  const message = memory.status === "running" ? "上次操作未完成，可能是插件弹窗被关闭，请重新导入后再执行。" : memory.message;
+  const summary = sanitizeExcelCorrectionSummary(memory.summary);
+  if (status !== "failed" && !summary) return null;
+  return {
+    status: status || "done",
+    actionName: memory.actionName || "",
+    sourceFileName: memory.sourceFileName || "",
+    completedAt: memory.completedAt || 0,
+    message: message || "",
+    summary,
+    previewItems: sanitizeExcelCorrectionPreviewItems(memory.previewItems),
+    restored: true,
+  };
+}
+
+function sanitizeExcelCorrectionSummary(summary) {
+  if (!summary || typeof summary !== "object") return null;
+  return {
+    checkedRows: Number(summary.checkedRows) || 0,
+    issueRows: Number(summary.issueRows) || 0,
+    invalidLinks: Number(summary.invalidLinks) || 0,
+    duplicateRows: Number(summary.duplicateRows) || 0,
+    duplicateAccountCells: Number(summary.duplicateAccountCells) || 0,
+    fieldMismatches: Number(summary.fieldMismatches) || 0,
+    fixedCells: Number(summary.fixedCells) || 0,
+  };
+}
+
+function sanitizeExcelCorrectionPreviewItems(items) {
+  return (Array.isArray(items) ? items : []).slice(0, 8).map((item) => ({
+    rowNumber: item && item.rowNumber != null ? item.rowNumber : "",
+    message: item && item.message != null ? String(item.message) : "",
+  }));
+}
+
+// 发起单批 Reflo 请求，并对瞬时错误（网关 5xx/429、网络中断）做有限次指数退避重试。
+// onRetry(attempt, maxAttempts, error, waitMs) 为可选回调，供调用方向用户提示"正在自动重试"。
+async function fetchRefloReleaseInfoBatch(settings, tasks, onRetry) {
   const payload = {
     links: tasks.map((task) => ({ id: task.id, url: task.url })),
   };
-  const response = await fetchWithTimeout(settings.apiUrl, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${settings.token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  }, REFLO_REQUEST_TIMEOUT_MS);
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(`Reflo API 请求失败：${response.status} ${response.statusText}${text ? `，${text.slice(0, 160)}` : ""}`);
+  // 按需开启粉丝数查询（抖音链接会额外调用用户主页 API，约 +0.3-0.5s/条）
+  let apiUrl = settings.apiUrl;
+  if (settings.enrichFollower) {
+    apiUrl = apiUrl.includes("?")
+      ? `${apiUrl}&enrich_follower=true`
+      : `${apiUrl}?enrich_follower=true`;
   }
-  const data = await response.json();
-  if (!data || !Array.isArray(data.items)) throw new Error("Reflo API 响应格式无效");
-  return data;
-}
-
-async function fetchWithTimeout(url, init, timeoutMs) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } catch (error) {
-    if (error && error.name === "AbortError") throw new Error(`Reflo API 请求超时（${Math.round(timeoutMs / 1000)} 秒）`);
-    throw error;
-  } finally {
-    clearTimeout(timer);
+  let lastError = "Reflo API 请求失败";
+  for (let attempt = 1; attempt <= REFLO_MAX_ATTEMPTS; attempt += 1) {
+    // 通过后台 service worker 发起请求：MV3 下只有后台 worker 能凭 host_permissions 绕过 CORS，
+    // 在 popup 页面直接 fetch 会被服务器 CORS 白名单拒绝（chrome-extension:// 不在白名单），导致 "Failed to fetch"。
+    const response = await sendMessage({
+      type: "REFLO_RELEASE_INFO_BATCH",
+      apiUrl,
+      token: settings.token,
+      payload,
+      timeoutMs: REFLO_REQUEST_TIMEOUT_MS,
+    });
+    if (response && response.ok) return response.data;
+    lastError = response && response.error ? response.error : "Reflo API 请求失败";
+    // 仅对后台标记为瞬时（5xx/429/网络中断）的错误重试；鉴权、参数、超时等错误重试无益。
+    const retryable = Boolean(response && response.retryable);
+    if (!retryable || attempt >= REFLO_MAX_ATTEMPTS) break;
+    const waitMs = Math.min(REFLO_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), REFLO_RETRY_MAX_DELAY_MS);
+    if (typeof onRetry === "function") onRetry(attempt, REFLO_MAX_ATTEMPTS, lastError, waitMs);
+    await delay(waitMs);
   }
+  throw new Error(lastError);
 }
 
 function mergeRefloReleaseInfo(tasks, response) {
@@ -1103,21 +1769,29 @@ function normalizeRefloReleaseInfo(data) {
   const platform = normalizeRefloPlatformLabel(data.platformLabel || data.platform);
   const title = normalizeTaskText(data.title);
   const link = normalizeTaskText(data.resolvedUrl) || normalizeTaskText(data.url);
-  const time = normalizePublishTime(data.publishTime || data.publish_time || data.createTime || data.create_time || data.createtime);
+  // 后端可能用 publishTime / publish_date 等不同键返回带时分秒的发布时间，这里全部兜底读取。
+  const rawPublishTime = normalizeTaskText(data.publishTime || data.publish_time || data.publishDate || data.publish_date || data.createTime || data.create_time || data.createtime);
+  const time = normalizePublishTime(rawPublishTime);
+  // 含时分秒的版本，供「Excel 日期精确到时分秒」导出使用；Reflo 只返回到天时与 time 相同。
+  const timeWithSeconds = normalizePublishTime(rawPublishTime, true);
   return {
     account,
     platform,
     title,
     link,
     time,
+    timeWithSeconds,
     source: normalizeTaskText(data.source) || "reflo",
     confidence: normalizeTaskText(data.confidence),
     coverUrl: normalizeTaskText(coalesceRefloValue(data.coverUrl, data.cover_url)),
     avatarUrl: normalizeTaskText(coalesceRefloValue(data.avatarUrl, data.headImgUrl, data.head_img_url)),
+    playCount: normalizeMetricValue(coalesceRefloValue(data.playCount, data.play_count)),
     diggCount: normalizeMetricValue(coalesceRefloValue(data.diggCount, data.digg_count)),
     commentCount: normalizeMetricValue(coalesceRefloValue(data.commentCount, data.comment_count)),
     shareCount: normalizeMetricValue(coalesceRefloValue(data.shareCount, data.share_count)),
     collectCount: normalizeMetricValue(coalesceRefloValue(data.collectCount, data.collect_count)),
+    followerCount: normalizeMetricValue(coalesceRefloValue(data.followerCount, data.follower_count)),
+    anomaly: data.anomaly || null,
   };
 }
 
@@ -1165,10 +1839,93 @@ function chunkArray(items, size) {
   return chunks;
 }
 
+function mergeParsedFiles(parsedFiles) {
+  const files = (Array.isArray(parsedFiles) ? parsedFiles : [])
+    .filter((entry) => entry && Array.isArray(entry.rows) && entry.rows.some((row) => hasCellValue(row)));
+  if (!files.length) throw new Error("没有可合并的有效表格");
+
+  const base = files[0];
+  const baseAnalysis = analyzeImportRows(base.rows);
+  const baseHeaderRowIndex = baseAnalysis.headerRowIndex;
+  const mergedHeader = (base.rows[baseHeaderRowIndex] || []).map((cell) => (cell == null ? "" : String(cell)));
+
+  // 以首个文件表头为基准列；记录「规范化表头 -> 合并表列号」用于按名对齐后续文件。
+  const headerKeyToIndex = new Map();
+  mergedHeader.forEach((header, index) => {
+    const key = normalizeHeader(header);
+    if (key && !headerKeyToIndex.has(key)) headerKeyToIndex.set(key, index);
+  });
+
+  const mergedRows = [mergedHeader];
+  const realignedFiles = [];
+  const appendedHeaders = [];
+  // 背景填充标记与 mergedRows 行号对齐；表头行不参与处理，标记为 false。
+  // 只要有一个文件能解析到填充信息（xlsx），合并结果就给出标记数组；全部无填充信息（如纯 CSV）则为 null。
+  const mergedFillMarks = [false];
+  const anyFillInfo = files.some((file) => Array.isArray(file.fillMarks));
+
+  // 首个文件的数据行原样保留（与单文件路径一致，仅丢弃表头以上的标题行）。
+  for (let rowIndex = baseHeaderRowIndex + 1; rowIndex < base.rows.length; rowIndex += 1) {
+    if (!hasCellValue(base.rows[rowIndex])) continue;
+    mergedRows.push((base.rows[rowIndex] || []).map((cell) => (cell == null ? "" : String(cell))));
+    mergedFillMarks.push(Boolean(base.fillMarks && base.fillMarks[rowIndex]));
+  }
+
+  // 后续文件按表头名对齐到基准列，列名不存在则取并集追加到末尾。
+  for (let fileIndex = 1; fileIndex < files.length; fileIndex += 1) {
+    const file = files[fileIndex];
+    const analysis = analyzeImportRows(file.rows);
+    const headerRow = (file.rows[analysis.headerRowIndex] || []).map((cell) => (cell == null ? "" : String(cell)));
+    const colMap = new Array(headerRow.length);
+    let needsRealign = false;
+    for (let col = 0; col < headerRow.length; col += 1) {
+      const key = normalizeHeader(headerRow[col]);
+      if (key && headerKeyToIndex.has(key)) {
+        colMap[col] = headerKeyToIndex.get(key);
+        if (colMap[col] !== col) needsRealign = true;
+      } else if (key) {
+        const newIndex = mergedHeader.length;
+        mergedHeader[newIndex] = headerRow[col];
+        headerKeyToIndex.set(key, newIndex);
+        colMap[col] = newIndex;
+        appendedHeaders.push(headerRow[col]);
+        needsRealign = true;
+      } else {
+        colMap[col] = col; // 无表头列：按位置兜底对齐。
+      }
+    }
+    if (needsRealign) realignedFiles.push(file.fileName);
+    for (let rowIndex = analysis.headerRowIndex + 1; rowIndex < file.rows.length; rowIndex += 1) {
+      const sourceRow = file.rows[rowIndex] || [];
+      if (!hasCellValue(sourceRow)) continue;
+      const targetRow = new Array(mergedHeader.length).fill("");
+      for (let col = 0; col < sourceRow.length; col += 1) {
+        const value = sourceRow[col];
+        if (value == null || value === "") continue;
+        const targetCol = colMap[col] != null ? colMap[col] : col;
+        targetRow[targetCol] = String(value);
+      }
+      mergedRows.push(targetRow);
+      mergedFillMarks.push(Boolean(file.fillMarks && file.fillMarks[rowIndex]));
+    }
+  }
+
+  return {
+    rows: mergedRows,
+    fileName: base.fileName,
+    fillMarks: anyFillInfo ? mergedFillMarks : null,
+    realignedFiles: Array.from(new Set(realignedFiles)),
+    appendedHeaders: Array.from(new Set(appendedHeaders)),
+    dataRowCount: mergedRows.length - 1,
+  };
+}
+
+// 统一返回 { rows, fillMarks }：fillMarks 与 rows 行号对齐，标记该行是否有单元格背景填充；
+// CSV 无填充概念，fillMarks 返回 null。
 async function parseInputFile(file) {
   const lowerName = file.name.toLowerCase();
   if (lowerName.endsWith(".csv")) {
-    return parseCsv(await file.text());
+    return { rows: parseCsv(await file.text()), fillMarks: null };
   }
   if (lowerName.endsWith(".xlsx")) {
     return parseXlsx(await file.arrayBuffer());
@@ -1221,13 +1978,48 @@ async function parseXlsx(arrayBuffer) {
   const workbookXml = await readZipText(entries, "xl/workbook.xml");
   const workbookRels = await readZipText(entries, "xl/_rels/workbook.xml.rels");
   const sharedStringsXml = entries.has("xl/sharedStrings.xml") ? await readZipText(entries, "xl/sharedStrings.xml") : "";
+  const stylesXml = entries.has("xl/styles.xml") ? await readZipText(entries, "xl/styles.xml") : "";
   const sheetPath = getFirstSheetPath(workbookXml, workbookRels);
   const sheetXml = await readZipText(entries, sheetPath);
   const sheetRelsPath = getSheetRelsPath(sheetPath);
   const sheetRelsXml = entries.has(sheetRelsPath) ? await readZipText(entries, sheetRelsPath) : "";
   const sharedStrings = parseSharedStrings(sharedStringsXml);
   const hyperlinkTargets = parseRelationshipTargets(sheetRelsXml);
-  return parseSheetRows(sheetXml, sharedStrings, hyperlinkTargets);
+  const markedStyleIndexes = parseStyleFillMarks(stylesXml);
+  return parseSheetRows(sheetXml, sharedStrings, hyperlinkTargets, markedStyleIndexes);
+}
+
+// 解析 xl/styles.xml，返回「带真实背景填充」的单元格样式索引集合（对应 <c s="..">、<row s="..">）。
+function parseStyleFillMarks(xml) {
+  if (!xml) return new Set();
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  // fills 按文档顺序即为 fillId；记录每个 fill 的 patternType。
+  const fillPatternTypes = Array.from(doc.querySelectorAll("fills > fill")).map((fill) => {
+    const pattern = fill.querySelector("patternFill");
+    return pattern ? (pattern.getAttribute("patternType") || "") : "";
+  });
+  // cellXfs 按文档顺序即为单元格样式索引；记录每个 xf 引用的 fillId。
+  const xfFillIds = Array.from(doc.querySelectorAll("cellXfs > xf")).map((xf) => Number.parseInt(xf.getAttribute("fillId"), 10));
+  return buildMarkedStyleIndexSet(fillPatternTypes, xfFillIds);
+}
+
+// 纯逻辑：根据 fill 的 patternType 列表与 xf 的 fillId 列表，算出「算作背景标记」的样式索引集合。
+// 排除 none 与 Excel 默认占位的 gray125，其余有图案的填充（solid 等）视为用户手动标记。
+function buildMarkedStyleIndexSet(fillPatternTypes, xfFillIds) {
+  const filledFillIds = new Set();
+  (Array.isArray(fillPatternTypes) ? fillPatternTypes : []).forEach((type, fillId) => {
+    if (isMarkFillPatternType(type)) filledFillIds.add(fillId);
+  });
+  const markedStyleIndexes = new Set();
+  (Array.isArray(xfFillIds) ? xfFillIds : []).forEach((fillId, styleIndex) => {
+    if (Number.isFinite(fillId) && filledFillIds.has(fillId)) markedStyleIndexes.add(styleIndex);
+  });
+  return markedStyleIndexes;
+}
+
+function isMarkFillPatternType(type) {
+  const normalized = String(type || "").trim().toLowerCase();
+  return Boolean(normalized) && normalized !== "none" && normalized !== "gray125";
 }
 
 function parseZipEntries(arrayBuffer) {
@@ -1325,23 +2117,38 @@ function parseSharedStrings(xml) {
   return Array.from(doc.querySelectorAll("si")).map((si) => Array.from(si.querySelectorAll("t")).map((t) => t.textContent || "").join(""));
 }
 
-function parseSheetRows(xml, sharedStrings, hyperlinkTargets) {
+function parseSheetRows(xml, sharedStrings, hyperlinkTargets, markedStyleIndexes = null) {
   const doc = new DOMParser().parseFromString(xml, "application/xml");
   const hyperlinks = parseSheetHyperlinks(doc, hyperlinkTargets);
+  const detectFill = Boolean(markedStyleIndexes && markedStyleIndexes.size);
   const rows = [];
+  const fillMarks = [];
   Array.from(doc.querySelectorAll("sheetData row")).forEach((row) => {
     const rowRef = Number.parseInt(row.getAttribute("r"), 10);
     const rowIndex = Number.isFinite(rowRef) && rowRef > 0 ? rowRef - 1 : rows.length;
     const values = [];
+    // 行级填充：整行选中后填色时，Excel 会在 <row> 上写 customFormat + s。
+    let marked = detectFill && row.getAttribute("customFormat") === "1" && markedStyleIndexes.has(Number.parseInt(row.getAttribute("s"), 10));
     Array.from(row.querySelectorAll("c")).forEach((cell) => {
       const ref = cell.getAttribute("r") || "A1";
       const colIndex = columnNameToIndex(ref.replace(/[0-9]/g, ""));
       values[colIndex] = appendHyperlinkTarget(readCellValue(cell, sharedStrings), hyperlinks.get(ref));
+      // 单元格级填充：任一单元格命中标记样式即视为该行有背景标记。
+      if (detectFill && !marked && markedStyleIndexes.has(Number.parseInt(cell.getAttribute("s"), 10))) marked = true;
     });
     rows[rowIndex] = values.map((value) => value == null ? "" : value);
+    fillMarks[rowIndex] = marked;
   });
-  while (rows.length && !hasCellValue(rows[rows.length - 1])) rows.pop();
-  return Array.from({ length: rows.length }, (_, index) => rows[index] || []);
+  while (rows.length && !hasCellValue(rows[rows.length - 1])) {
+    rows.pop();
+    fillMarks.pop();
+  }
+  // xlsx 始终返回 fillMarks 数组（无任何填充时为全 false），以便与 CSV 的 null（无填充信息）区分：
+  // 全 false 表示「确实没有标记行」，选项生效时不处理任何行；null 表示「无法判断填充」，选项被忽略。
+  return {
+    rows: Array.from({ length: rows.length }, (_, index) => rows[index] || []),
+    fillMarks: Array.from({ length: rows.length }, (_, index) => Boolean(fillMarks[index])),
+  };
 }
 
 function parseSheetHyperlinks(doc, hyperlinkTargets) {
@@ -1439,6 +2246,37 @@ function resolveSequenceForPlatform(sequence, state) {
   const adjustedNumber = state.expectedNumber;
   state.expectedNumber += 1;
   return String(adjustedNumber);
+}
+
+function renumberSequenceColumn(rows, analysis) {
+  if (!analysis || analysis.sequenceIndex < 0) return 0;
+  const sequenceIndex = analysis.sequenceIndex;
+  const headerRowIndex = analysis.headerRowIndex;
+  // 与 buildLocalCorrectionRows 的行选择保持一致：跳过空行与「合计」汇总行，
+  // 其余数据行（含链接无效的行）都参与连续编号，避免与导出行集合错位。
+  let next = findSequenceRenumberStart(rows, analysis);
+  let renumbered = 0;
+  for (let rowIndex = headerRowIndex + 1; rowIndex < rows.length; rowIndex += 1) {
+    const row = rows[rowIndex] || [];
+    if (!hasCellValue(row)) continue;
+    if (isCorrectionSummaryRow(row)) continue;
+    ensureCorrectionRow(rows, rowIndex);
+    rows[rowIndex][sequenceIndex] = String(next);
+    next += 1;
+    renumbered += 1;
+  }
+  return renumbered;
+}
+
+function findSequenceRenumberStart(rows, analysis) {
+  for (let rowIndex = analysis.headerRowIndex + 1; rowIndex < rows.length; rowIndex += 1) {
+    const row = rows[rowIndex] || [];
+    if (!hasCellValue(row)) continue;
+    if (isCorrectionSummaryRow(row)) continue;
+    const number = parseSequenceNumber(row[analysis.sequenceIndex]);
+    return number != null ? number : 1;
+  }
+  return 1;
 }
 
 function determineSequenceStartNumber(rows, analysis, sequenceMode) {
@@ -1577,23 +2415,70 @@ function normalizeTaskText(value) {
   return String(value == null ? "" : value).trim();
 }
 
-function normalizePublishTime(value) {
+// includeTime 为 true 时，若源数据本身带有具体时分秒，则输出「日期 时:分:秒」，否则仍只输出到天；
+// 默认（false）只精确到天，对应「内部配置-日期精确到时分秒」开关，默认关闭。
+function normalizePublishTime(value, includeTime = false) {
   const text = normalizeTaskText(value);
   if (!text) return "";
   if (/^\d{1,5}(?:\.\d+)?$/.test(text)) {
     const number = Number(text);
     if (number > 20000 && number < 80000) {
-      const date = new Date(Math.round((number - 25569) * 86400000));
+      // 按秒取整，规避 Excel 日期序列号的浮点误差（否则 20:52:44 可能被解析成 20:52:43）。
+      const date = new Date(Math.round((number - 25569) * 86400) * 1000);
       if (!Number.isNaN(date.getTime())) {
-        return formatPublishDateParts(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate());
+        const day = formatPublishDateParts(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate());
+        if (!includeTime) return day;
+        return appendPublishTimeParts(day, date.getUTCHours(), date.getUTCMinutes(), date.getUTCSeconds());
       }
     }
   }
-  let match = /^(\d{4})[./年-](\d{1,2})[./月-](\d{1,2})(?:日)?(?:\s+\d{1,2}:\d{1,2}(?::\d{1,2})?)?$/.exec(text);
-  if (match) return formatPublishDateParts(match[1], match[2], match[3]);
+  // 时间分隔符兼容空格与 ISO 的「T」，秒后可带小数（如 .000）及时区后缀（Z 或 +08:00），按字面时分秒展示、不做时区换算，
+  // 以便解析 Reflo 返回的各种完整时间戳格式。
+  let match = /^(\d{4})[./年-](\d{1,2})[./月-](\d{1,2})(?:日)?(?:[\sT]+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?(?:\.\d+)?(?:\s*(?:Z|[+-]\d{1,2}:?\d{0,2}))?)?$/.exec(text);
+  if (match) {
+    const day = formatPublishDateParts(match[1], match[2], match[3]);
+    if (!includeTime) return day;
+    return appendPublishTimeParts(day, match[4], match[5], match[6]);
+  }
   match = /^(\d{1,2})[./月-](\d{1,2})日?$/.exec(text);
-  if (match) return formatPublishDateParts(2026, match[1], match[2]);
+  if (match) return formatPublishDateParts(getDefaultPublishYear(), match[1], match[2]);
   return text;
+}
+
+// 将时分秒拼接到日期串后面。三者皆 0 或缺省时，视为源数据本无具体时间（整数日期序列号或纯日期文本），仍只输出到天。
+function appendPublishTimeParts(day, hours, minutes, seconds) {
+  if (!day) return day;
+  const h = Number(hours) || 0;
+  const m = Number(minutes) || 0;
+  const s = Number(seconds) || 0;
+  if (h === 0 && m === 0 && s === 0) return day;
+  if (h > 23 || m > 59 || s > 59) return day;
+  const pad = (part) => String(part).padStart(2, "0");
+  return `${day} ${pad(h)}:${pad(m)}:${pad(s)}`;
+}
+
+// 导出前对「发布日期」整列统一归一化。仅处理表头以下的数据行，跳过「合计」等汇总行；
+// normalizePublishTime 对非日期文本是无操作（原样返回），因此对非日期单元格安全。
+// shouldIncludeRow 为可选谓词：返回 false 的行保持原样不归一化（与「只处理背景标记行」一致）。
+function normalizeExportPublishTimeColumn(rows, analysis, includeTime = false, shouldIncludeRow = null) {
+  const columnIndex = analysis ? analysis.publishTimeIndex : -1;
+  if (columnIndex < 0 || !Array.isArray(rows)) return;
+  const headerRowIndex = analysis.headerRowIndex;
+  for (let rowIndex = headerRowIndex + 1; rowIndex < rows.length; rowIndex += 1) {
+    const row = rows[rowIndex];
+    if (!Array.isArray(row)) continue;
+    if (isCorrectionSummaryRow(row)) continue;
+    if (shouldIncludeRow && !shouldIncludeRow(rowIndex)) continue;
+    const raw = row[columnIndex];
+    if (raw == null || raw === "") continue;
+    const normalized = normalizePublishTime(raw, includeTime);
+    if (normalized) row[columnIndex] = normalized;
+  }
+}
+
+// 仅含「月-日」、缺省年份时，按处理当时的当前年份补全（此前硬编码 2026，跨年会判错）。
+function getDefaultPublishYear() {
+  return new Date().getFullYear();
 }
 
 function formatPublishDateParts(year, month, day) {
@@ -1610,15 +2495,18 @@ function findNicknameIndex(headerRow) {
 }
 
 function findPublishAccountIndex(headerRow) {
-  return findHeaderIndexContaining(headerRow, ["账号", "昵称"]);
+  // findBestHeaderIndex 先精确后包含，避免在「视频标题/标题」这类多列含同一关键词时选错；
+  // 词表与 findNicknameIndex 对齐（含作者/达人/博主），避免账号列名非「账号/昵称」时漏识别。
+  return findBestHeaderIndex(headerRow, ["发布账号", "账号", "昵称", "作者", "达人", "博主"]);
 }
 
 function findPublishPlatformIndex(headerRow) {
-  return findHeaderIndexContaining(headerRow, ["平台"]);
+  return findBestHeaderIndex(headerRow, ["发布平台", "平台"]);
 }
 
 function findPublishTitleIndex(headerRow) {
-  return findHeaderIndexContaining(headerRow, ["标题"]);
+  // 必须精确优先：表中常同时存在「视频标题」(源标题) 与「标题」(发布标题)，发布标题取后者。
+  return findBestHeaderIndex(headerRow, ["发布标题", "标题"]);
 }
 
 function findPublishLinkIndex(headerRow, fallbackIndex) {
@@ -1718,6 +2606,12 @@ function hasCellValue(row) {
   return (row || []).some((value) => String(value || "").trim());
 }
 
+function isCorrectionSummaryRow(row) {
+  const firstCell = normalizeTaskText((row || [])[0]);
+  if (!firstCell.includes("合计")) return false;
+  return !(row || []).some((value) => extractVideoUrls(value).length);
+}
+
 function extractHttpUrls(value) {
   if (value == null) return [];
   const text = String(value).trim();
@@ -1803,7 +2697,7 @@ function getUrlPlatform(url) {
     const host = parsed.hostname.toLowerCase();
     const path = parsed.pathname.toLowerCase();
     if ((host === "weixin.qq.com" && path.startsWith("/sph/")) || host === "channels.weixin.qq.com") return "weixin";
-    if ((host === "m.toutiao.com" && path.startsWith("/is/")) || ((host === "toutiao.com" || host === "www.toutiao.com") && ["/article/", "/w/", "/video/"].some((prefix) => path.startsWith(prefix)))) return "toutiao";
+    if ((host === "m.toutiao.com" && ["/is/", "/video/"].some((prefix) => path.startsWith(prefix))) || ((host === "toutiao.com" || host === "www.toutiao.com") && ["/article/", "/w/", "/video/"].some((prefix) => path.startsWith(prefix)))) return "toutiao";
     if (host === "v.douyin.com" || ((host === "douyin.com" || host === "www.douyin.com") && ["/video/", "/note/"].some((prefix) => path.startsWith(prefix)))) return "douyin";
     if (host === "xhslink.com" || ((host === "xiaohongshu.com" || host === "www.xiaohongshu.com") && ["/explore/", "/discovery/item/"].some((prefix) => path.startsWith(prefix)))) return "xiaohongshu";
     return "";
@@ -2075,6 +2969,7 @@ async function startRun() {
     autoGeneratePpt: elements.autoGeneratePptInput ? elements.autoGeneratePptInput.checked : true,
     autoPptMode: elements.pptModeInput.value,
     autoPptTitle: elements.pptReleaseTitleInput ? elements.pptReleaseTitleInput.value : "",
+    autoPptTemplateId: isPptModeLockedByTemplate() && currentPptTemplate ? currentPptTemplate.id || "" : "",
     enableSupplementRepairZip: getCurrentCaptureMode() === "supplement",
     douyinBatchSize: DOUYIN_BATCH_SIZE,
     douyinWindowMode: elements.douyinWindowModeInput.value,
@@ -2152,11 +3047,14 @@ function applyState(state) {
   elements.resumeButton.disabled = state.status !== "paused";
   elements.stopButton.disabled = state.status !== "running" && state.status !== "paused";
   elements.fileInput.disabled = running;
+  if (elements.clearFilesButton) elements.clearFilesButton.disabled = running;
   elements.captureModeInput.disabled = running;
   elements.supplementFolderInput.disabled = running;
   elements.refloEnrichmentInput.disabled = running || isRefloEnriching || isExcelCorrecting;
   syncRefloEnrichmentUi(running);
-  elements.pptModeInput.disabled = running || pptBusy;
+  elements.pptModeInput.disabled = running || pptBusy || isPptModeLockedByTemplate();
+  if (elements.pptTemplateSourceInput) elements.pptTemplateSourceInput.disabled = running || pptBusy;
+  if (elements.pptTemplateInput) elements.pptTemplateInput.disabled = running || pptBusy;
   elements.pptZipInput.disabled = running || pptBusy;
   elements.pptFolderInput.disabled = running || pptBusy;
   elements.generatePptButton.disabled = running || pptBusy || !currentPptSource;
@@ -2195,6 +3093,25 @@ async function receiveAutoPptSuccessScreenshots() {
   return { screenshots, sourceName: response.sourceName || "本次截图" };
 }
 
+// Resolves the custom template bytes for the post-run auto-PPT path. Prefers the
+// in-memory template (popup still open), then falls back to the IndexedDB cache via
+// the template id carried in the run options. Returns undefined to use the built-in
+// template.
+async function loadAutoPptTemplateBytesFromState(state) {
+  if (currentPptTemplate && currentPptTemplate.bytes) return currentPptTemplate.bytes;
+  const templateId = state && state.options ? state.options.autoPptTemplateId : "";
+  if (!templateId || !window.TemplateCache) return undefined;
+  try {
+    const record = await window.TemplateCache.getTemplate(templateId);
+    if (record && record.bytes && record.bytes.length) {
+      return record.bytes instanceof Uint8Array ? record.bytes : new Uint8Array(record.bytes);
+    }
+  } catch (error) {
+    addLog(`读取自定义模板缓存失败，将使用内置模板：${error.message}`, "warning");
+  }
+  return undefined;
+}
+
 async function autoGeneratePptFromCompletedRun(state) {
   let claimed = false;
   try {
@@ -2218,7 +3135,8 @@ async function autoGeneratePptFromCompletedRun(state) {
     const modeValue = state.options.autoPptMode || elements.pptModeInput.value;
     const mode = { value: modeValue, ...(PPT_MODES[modeValue] || PPT_MODES.clippings) };
     const tasks = screenshots.map((item) => item.task).filter(Boolean);
-    const result = await buildPptByMode(source, mode.value, { tasks, title: state.options.autoPptTitle || "" });
+    const templateBytes = await loadAutoPptTemplateBytesFromState(state);
+    const result = await buildPptByMode(source, mode.value, { tasks, title: state.options.autoPptTitle || "", templateBytes });
     await window.PptxClippings.downloadResult(result);
     elements.pptZipInfo.textContent = buildPptResultInfo(mode, result);
     await sendMessage({ type: "MARK_AUTO_PPT_GENERATED", result: { fileName: result.fileName, imageCount: result.imageCount, slideCount: result.slideCount, mode: mode.value } });
@@ -2366,6 +3284,10 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function sendMessage(message) {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage(message, (response) => {
@@ -2395,6 +3317,22 @@ function readStorageValue(key) {
 }
 
 function writeStorageValue(key, value) {
-  if (!chrome.storage || !chrome.storage.local) return;
-  chrome.storage.local.set({ [key]: value });
+  return new Promise((resolve) => {
+    if (!chrome.storage || !chrome.storage.local) {
+      resolve();
+      return;
+    }
+    chrome.storage.local.set({ [key]: value }, () => resolve());
+  });
 }
+
+function removeStorageValue(key) {
+  return new Promise((resolve) => {
+    if (!chrome.storage || !chrome.storage.local) {
+      resolve();
+      return;
+    }
+    chrome.storage.local.remove(key, () => resolve());
+  });
+}
+

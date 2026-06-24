@@ -41,13 +41,16 @@
         </div>
       </div>
       <label class="file-picker">
-        <input id="fileInput" type="file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+        <input id="fileInput" type="file" multiple accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
         <span>
-          <strong>选择 Excel / CSV 文件</strong>
-          <small>建议表头包含：序号、昵称、发布链接</small>
+          <strong>选择 Excel / CSV 文件（可多选）</strong>
+          <small>建议表头包含：序号、昵称、发布链接；多选时按上传顺序合并，序号顺延，文件名取第一个。再次选择或拖拽会继续追加</small>
         </span>
       </label>
-      <div id="fileInfo" class="muted status-hint">等待导入任务表。只生成“发布剪报多图铺页”PPT 时，可跳过这一步。</div>
+      <div class="file-actions">
+        <button id="clearFilesButton" type="button" class="link-button" hidden>清空已导入文件</button>
+      </div>
+      <div id="fileInfo" class="muted status-hint">等待导入任务表。可一次选择多个表格，按上传顺序合并。只生成“发布剪报多图铺页”PPT 时，可跳过这一步。</div>
     </section>
 
     <section class="card step-card">
@@ -183,11 +186,26 @@
         </div>
       </div>
       <label class="ppt-mode-field">
+        模板来源
+        <select id="pptTemplateSourceInput">
+          <option value="builtin" selected>使用内置模板</option>
+          <option value="custom">上传自定义模板</option>
+        </select>
+      </label>
+      <div id="pptTemplateUpload" class="ppt-template-upload" hidden>
+        <label class="ppt-source-action">
+          <input id="pptTemplateInput" type="file" accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation">
+          <span>选择 PPT 模板</span>
+        </label>
+        <div id="pptTemplateInfo" class="muted">上传 .pptx 模板后，插件会自动评估它与三种内置模式的匹配关系；发布信息类模板会保留顶部大标题和右侧截图占位图的位置。</div>
+      </div>
+      <label class="ppt-mode-field">
         PPT 模式
         <select id="pptModeInput">
           <option value="clippings" selected>发布剪报多图铺页</option>
           <option value="link-screenshot">链接截图单图单页</option>
           <option value="release-info-screenshot">发布信息截图单图单页</option>
+          <option value="dawanqu">大湾区崭新模版</option>
         </select>
       </label>
       <label id="pptReleaseTitleField" class="ppt-title-field" hidden>
@@ -264,7 +282,15 @@
       <div class="reflo-card-top">
         <label class="wide-field checkbox-field">
           <input id="refloEnrichmentInput" type="checkbox">
-          <span>发布信息增强</span>
+          <span>信息增强</span>
+        </label>
+        <label class="checkbox-field reflo-note-option">
+          <input id="excelCorrectionNoteInput" type="checkbox" checked>
+          <span>纠错说明</span>
+        </label>
+        <label class="checkbox-field reflo-note-option">
+          <input id="enrichFollowerInput" type="checkbox">
+          <span>粉丝数</span>
         </label>
         <div class="reflo-action-buttons">
           <button id="excelCorrectionButton" class="small-button" type="button" disabled>Excel 纠错</button>
@@ -281,6 +307,30 @@
             API Token
             <input id="refloApiTokenInput" type="password" placeholder="首次配置或 token 失效时填写">
           </label>
+          <div class="wide-field play-count-range-field">
+            <div class="play-count-range-title">视频号 / 小红书播放量范围</div>
+            <div class="play-count-range-inputs">
+              <label>
+                最小值
+                <input id="playCountMinInput" type="number" min="0" step="100" placeholder="如 1000">
+              </label>
+              <label>
+                最大值
+                <input id="playCountMaxInput" type="number" min="0" step="100" placeholder="如 100000">
+              </label>
+            </div>
+            <div class="play-count-range-hint">视频号、小红书抓不到播放量；填写范围后，插件会按 Reflo 返回的「点赞+评论+收藏+分享」之和从高到低映射到此区间，互动最高取最大值，依次递减。留空则不估算。</div>
+          </div>
+          <label class="checkbox-field">
+            <input id="excelDateIncludeTimeInput" type="checkbox">
+            <span>Excel 日期精确到时分秒</span>
+          </label>
+          <div class="play-count-range-hint">默认只输出到「天」（如 2026-05-31）。勾选后，若源数据带具体时间则输出「2026-05-31 20:52:44」，否则仍只到天。</div>
+          <label class="checkbox-field">
+            <input id="excelOnlyMarkedRowsInput" type="checkbox">
+            <span>只处理有背景标记的记录行</span>
+          </label>
+          <div class="play-count-range-hint">勾选后，纠错/修正只处理「有单元格颜色填充」的数据行，未填色的行原样保留不动；仅对 xlsx 生效，CSV 无填充信息会忽略此项。</div>
         </details>
       </div>
     </section>
