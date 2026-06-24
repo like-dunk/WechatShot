@@ -172,3 +172,130 @@
   if (typeof self !== "undefined") self.ScreenshotCache = api;
   if (typeof window !== "undefined") window.ScreenshotCache = api;
 })();
+
+(() => {
+  // Independent IndexedDB store for auto-PPT custom templates. Kept in a separate
+  // database from the screenshot cache so the existing screenshot caching logic is
+  // untouched (no DB version bump, no shared object store).
+  const DB_NAME = "shipinhao-template-cache";
+  const DB_VERSION = 1;
+  const STORE_NAME = "templates";
+  const CREATED_INDEX = "createdAt";
+  const DEFAULT_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
+
+  function openDb() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(DB_NAME, DB_VERSION);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        const store = db.objectStoreNames.contains(STORE_NAME)
+          ? request.transaction.objectStore(STORE_NAME)
+          : db.createObjectStore(STORE_NAME, { keyPath: "id" });
+        if (!store.indexNames.contains(CREATED_INDEX)) store.createIndex(CREATED_INDEX, "createdAt", { unique: false });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("打开模板缓存失败"));
+    });
+  }
+
+  function requestToPromise(request) {
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("模板缓存请求失败"));
+    });
+  }
+
+  function buildTemplateId() {
+    return `tpl-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  async function putTemplate(record) {
+    if (!record || !record.bytes) throw new Error("模板缓存记录不完整");
+    const id = record.id || buildTemplateId();
+    const bytes = record.bytes instanceof Uint8Array ? record.bytes : new Uint8Array(record.bytes);
+    const stored = {
+      id,
+      name: record.name || "自定义模板.pptx",
+      mode: record.mode || "",
+      bytes,
+      createdAt: record.createdAt || Date.now(),
+    };
+    const db = await openDb();
+    try {
+      const transaction = db.transaction(STORE_NAME, "readwrite");
+      transaction.objectStore(STORE_NAME).put(stored);
+      await new Promise((resolve, reject) => {
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error || new Error("写入模板缓存失败"));
+        transaction.onabort = () => reject(transaction.error || new Error("写入模板缓存中断"));
+      });
+    } finally {
+      db.close();
+    }
+    return id;
+  }
+
+  async function getTemplate(id) {
+    if (!id) return null;
+    const db = await openDb();
+    try {
+      const transaction = db.transaction(STORE_NAME, "readonly");
+      return await requestToPromise(transaction.objectStore(STORE_NAME).get(id));
+    } finally {
+      db.close();
+    }
+  }
+
+  async function deleteTemplate(id) {
+    if (!id) return;
+    const db = await openDb();
+    try {
+      const transaction = db.transaction(STORE_NAME, "readwrite");
+      transaction.objectStore(STORE_NAME).delete(id);
+      await new Promise((resolve, reject) => {
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error || new Error("删除模板缓存失败"));
+        transaction.onabort = () => reject(transaction.error || new Error("删除模板缓存中断"));
+      });
+    } finally {
+      db.close();
+    }
+  }
+
+  async function cleanupOldTemplates(maxAgeMs = DEFAULT_MAX_AGE_MS) {
+    const cutoff = Date.now() - maxAgeMs;
+    const db = await openDb();
+    try {
+      return await new Promise((resolve, reject) => {
+        let count = 0;
+        const transaction = db.transaction(STORE_NAME, "readwrite");
+        const index = transaction.objectStore(STORE_NAME).index(CREATED_INDEX);
+        const request = index.openCursor(IDBKeyRange.upperBound(cutoff));
+        request.onsuccess = () => {
+          const cursor = request.result;
+          if (!cursor) return;
+          cursor.delete();
+          count += 1;
+          cursor.continue();
+        };
+        request.onerror = () => reject(request.error || new Error("读取旧模板缓存失败"));
+        transaction.oncomplete = () => resolve(count);
+        transaction.onerror = () => reject(transaction.error || new Error("清理旧模板缓存失败"));
+        transaction.onabort = () => reject(transaction.error || new Error("清理旧模板缓存中断"));
+      });
+    } finally {
+      db.close();
+    }
+  }
+
+  const api = {
+    buildTemplateId,
+    putTemplate,
+    getTemplate,
+    deleteTemplate,
+    cleanupOldTemplates,
+  };
+
+  if (typeof self !== "undefined") self.TemplateCache = api;
+  if (typeof window !== "undefined") window.TemplateCache = api;
+})();
