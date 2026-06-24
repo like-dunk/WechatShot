@@ -2,6 +2,7 @@ const PPT_MODES = {
   clippings: { label: "发布剪报多图铺页" },
   "link-screenshot": { label: "链接截图单图单页" },
   "release-info-screenshot": { label: "发布信息截图单图单页" },
+  dawanqu: { label: "大湾区崭新模版" },
 };
 
 const statusText = document.getElementById("statusText");
@@ -44,13 +45,34 @@ async function receiveSuccessScreenshots() {
 
 async function buildPptByMode(source, modeValue, options = {}) {
   const matchingTasks = options.tasks || [];
+  const templateBytes = options.templateBytes || undefined;
   if (modeValue === "link-screenshot") {
-    return window.PptxClippings.buildLinkScreenshotFromImageFiles(source.files, source.name, matchingTasks);
+    return window.PptxClippings.buildLinkScreenshotFromImageFiles(source.files, source.name, matchingTasks, { templateBytes });
   }
   if (modeValue === "release-info-screenshot") {
-    return window.PptxClippings.buildReleaseInfoScreenshotFromImageFiles(source.files, source.name, matchingTasks, { title: options.title || "" });
+    return window.PptxClippings.buildReleaseInfoScreenshotFromImageFiles(source.files, source.name, matchingTasks, { title: options.title || "", templateBytes });
   }
-  return window.PptxClippings.buildFromImageFiles(source.files, source.name);
+  if (modeValue === "dawanqu") {
+    return window.PptxClippings.buildDawanquFromImageFiles(source.files, source.name, matchingTasks, { title: options.title || "", templateBytes });
+  }
+  return window.PptxClippings.buildFromImageFiles(source.files, source.name, { templateBytes });
+}
+
+// Loads custom template bytes saved by the popup when the run started. Returns
+// undefined (so the builder falls back to the built-in template) if there is no
+// template id, the cache is unavailable, or the bytes can't be read.
+async function loadAutoPptTemplateBytes(state) {
+  const templateId = state && state.options ? state.options.autoPptTemplateId : "";
+  if (!templateId || !window.TemplateCache) return undefined;
+  try {
+    const record = await window.TemplateCache.getTemplate(templateId);
+    if (record && record.bytes && record.bytes.length) {
+      return record.bytes instanceof Uint8Array ? record.bytes : new Uint8Array(record.bytes);
+    }
+  } catch (error) {
+    setStatus(`读取自定义模板失败，将使用内置模板：${error.message}`);
+  }
+  return undefined;
 }
 
 async function runAutoPptGeneration() {
@@ -73,7 +95,9 @@ async function runAutoPptGeneration() {
     const files = screenshots.map((item) => item.file);
     const source = { type: "files", files, name: screenshotsResponse.sourceName || "本次截图" };
     const tasks = screenshots.map((item) => item.task).filter(Boolean);
-    const result = await buildPptByMode(source, modeValue, { tasks, title: state.options.autoPptTitle || "" });
+    const templateBytes = await loadAutoPptTemplateBytes(state);
+    if (templateBytes) setStatus(`正在使用自定义模板生成${mode.label} PPT...`);
+    const result = await buildPptByMode(source, modeValue, { tasks, title: state.options.autoPptTitle || "", templateBytes });
     await window.PptxClippings.downloadResult(result);
     await sendMessage({ type: "MARK_AUTO_PPT_GENERATED", result: { fileName: result.fileName, imageCount: result.imageCount, slideCount: result.slideCount, mode: modeValue } });
     setStatus(`${mode.label} PPT 已触发下载：${result.fileName}`);

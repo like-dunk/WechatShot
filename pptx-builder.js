@@ -2,6 +2,7 @@
   const CLIPPINGS_TEMPLATE_FILE = "发布剪报-模板(1)(1).pptx";
   const LINK_SCREENSHOT_TEMPLATE_FILE = "链接截图单图单页-模板.pptx";
   const RELEASE_INFO_SCREENSHOT_TEMPLATE_FILE = "新单图单页-模板.pptx";
+  const DAWANQU_TEMPLATE_FILE = "【模版】AIGC-奕境X9粤港澳大湾区车展传播汇总.pptx";
   const OUTPUT_DIR_BASE = "截图";
 
   function formatLocalTimestamp(date) {
@@ -13,7 +14,7 @@
     const timestamp = formatLocalTimestamp(new Date());
     const baseName = String(sourceName || "").replace(/\.[^.]+$/, "").replace(/[\\/:*?"<>|\r\n\t]+/g, "").trim();
     const suffix = baseName ? `_${baseName}` : "";
-    return `${OUTPUT_DIR_BASE}/${timestamp}${suffix}`;
+    return `${OUTPUT_DIR_BASE}/${timestamp}${suffix}_PPT`;
   }
   const ZIP32_LIMIT = 0xffffffff;
   const MAX_SOURCE_ZIP_BYTES = 2 * 1024 * 1024 * 1024;
@@ -29,13 +30,17 @@
   const RELEASE_INFO_DEFAULT_TITLE = "2026年2月华为车BU-华为乾崑&奕境马上有乾崑视频传播项目——AI扩散—社交媒体平台";
   const RELEASE_INFO_LAYOUT = {
     title: { x: 0.72 * INCH_EMU, y: 0.45 * INCH_EMU, cx: 10.9 * INCH_EMU, cy: 0.78 * INCH_EMU },
-    text: { x: 0.9 * INCH_EMU, y: 1.45 * INCH_EMU, cx: 4.65 * INCH_EMU, cy: 0.5 * INCH_EMU, gap: 0.16 * INCH_EMU, lineHeight: 0.3 * INCH_EMU, charsPerLine: 25, maxBottom: 5.95 * INCH_EMU },
+    text: { x: 0.9 * INCH_EMU, y: 1.45 * INCH_EMU, cx: 4.65 * INCH_EMU, cy: 0.5 * INCH_EMU, gap: 0.16 * INCH_EMU, lineHeight: 0.3 * INCH_EMU, charsPerLine: 25, maxBottom: 5.95 * INCH_EMU, fontSize: 14, fontSizes: [14, 13, 12, 11] },
     image: { x: 6.25 * INCH_EMU, y: 1.75 * INCH_EMU, cx: 5.55 * INCH_EMU, cy: 4.45 * INCH_EMU },
   };
   const LINK_SCREENSHOT_DEFAULT_PICTURE = {
     x: 0.8 * INCH_EMU,
     y: 2.5 * INCH_EMU,
   };
+  // Annotation/placeholder labels on screenshot areas (e.g. "截图参考"). These are
+  // only layout hints in custom templates and are removed before inserting the
+  // real screenshot.
+  const SCREENSHOT_HINT_PATTERN = /截图参考|截图位置|截图示例|此处放截图|放置截图|截图占位|示意图|参考图/;
   const PML = "http://schemas.openxmlformats.org/presentationml/2006/main";
   const DML = "http://schemas.openxmlformats.org/drawingml/2006/main";
   const REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -76,24 +81,24 @@
     };
   }
 
-  async function buildFromZipFile(file) {
+  async function buildFromZipFile(file, options = {}) {
     const images = await readImagesFromZipFile(file);
-    return buildFromImages(images, file.name);
+    return buildFromImages(images, file.name, options);
   }
 
-  async function buildFromImageFiles(files, sourceName) {
+  async function buildFromImageFiles(files, sourceName, options = {}) {
     const { images, imageEntries } = await readImagesFromImageFiles(files);
-    return buildFromImages(images, sourceName || getFolderNameFromImageEntries(imageEntries));
+    return buildFromImages(images, sourceName || getFolderNameFromImageEntries(imageEntries), options);
   }
 
-  async function buildLinkScreenshotFromZipFile(file, tasks = []) {
+  async function buildLinkScreenshotFromZipFile(file, tasks = [], options = {}) {
     const images = await readImagesFromZipFile(file);
-    return buildLinkScreenshotFromImages(images, file.name, tasks);
+    return buildLinkScreenshotFromImages(images, file.name, tasks, options);
   }
 
-  async function buildLinkScreenshotFromImageFiles(files, sourceName, tasks = []) {
+  async function buildLinkScreenshotFromImageFiles(files, sourceName, tasks = [], options = {}) {
     const { images, imageEntries } = await readImagesFromImageFiles(files);
-    return buildLinkScreenshotFromImages(images, sourceName || getFolderNameFromImageEntries(imageEntries), tasks);
+    return buildLinkScreenshotFromImages(images, sourceName || getFolderNameFromImageEntries(imageEntries), tasks, options);
   }
 
   async function buildReleaseInfoScreenshotFromZipFile(file, tasks = [], options = {}) {
@@ -104,6 +109,87 @@
   async function buildReleaseInfoScreenshotFromImageFiles(files, sourceName, tasks = [], options = {}) {
     const { images, imageEntries } = await readImagesFromImageFiles(files);
     return buildReleaseInfoScreenshotFromImages(images, sourceName || getFolderNameFromImageEntries(imageEntries), tasks, options);
+  }
+
+  async function buildDawanquFromZipFile(file, tasks = [], options = {}) {
+    const images = await readImagesFromZipFile(file);
+    return buildDawanquFromImages(images, file.name, tasks, options);
+  }
+
+  async function buildDawanquFromImageFiles(files, sourceName, tasks = [], options = {}) {
+    const { images, imageEntries } = await readImagesFromImageFiles(files);
+    return buildDawanquFromImages(images, sourceName || getFolderNameFromImageEntries(imageEntries), tasks, options);
+  }
+
+  async function loadTemplateFiles(builtinName, templateBytes, errorMessage) {
+    if (templateBytes && templateBytes.length) {
+      const entries = parseZipEntries(toArrayBuffer(templateBytes));
+      return readAllZipFiles(entries);
+    }
+    const templateResponse = await fetch(chrome.runtime.getURL(builtinName));
+    if (!templateResponse.ok) throw new Error(errorMessage);
+    const templateEntries = parseZipEntries(await templateResponse.arrayBuffer());
+    return readAllZipFiles(templateEntries);
+  }
+
+  function toArrayBuffer(bytes) {
+    if (bytes instanceof ArrayBuffer) return bytes;
+    const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
+  }
+
+  async function analyzeTemplateFile(file) {
+    if (!file) throw new Error("请选择 PPT 模板文件");
+    if (!/\.pptx$/i.test(file.name || "")) throw new Error("请选择 .pptx 模板文件");
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const entries = parseZipEntries(toArrayBuffer(bytes));
+    const files = await readAllZipFiles(entries);
+    if (!files.has("ppt/presentation.xml")) throw new Error("不是有效的 PPTX 模板");
+    const recommendation = detectTemplateMode(files);
+    return {
+      name: file.name,
+      bytes,
+      mode: recommendation.mode,
+      reason: recommendation.reason,
+      slideCount: recommendation.slideCount,
+    };
+  }
+
+  function detectTemplateMode(files) {
+    const presentationDoc = parseXml(decodeText(files.get("ppt/presentation.xml")));
+    const presentationRelsDoc = parseXml(decodeText(files.get("ppt/_rels/presentation.xml.rels")));
+    const slides = getPresentationSlides(presentationDoc, presentationRelsDoc, files);
+    const slideCount = slides.length;
+    const allTexts = [];
+    let maxPicCount = 0;
+    let hasReleaseInfoFields = false;
+    let hasLinkLikeText = false;
+    slides.forEach((slide) => {
+      const slidePath = `ppt/${slide.target}`;
+      if (!files.has(slidePath)) return;
+      const doc = parseXml(decodeText(files.get(slidePath)));
+      const picCount = doc.getElementsByTagNameNS(PML, "pic").length;
+      maxPicCount = Math.max(maxPicCount, picCount);
+      const texts = getSlideTexts(files, slide.target);
+      texts.forEach((text) => allTexts.push(text));
+      const joined = texts.join("");
+      if (/发布账号|发布平台|发布标题|发布时间/.test(joined)) hasReleaseInfoFields = true;
+      if (/视频-|http|douyin\.com|发布链接/.test(joined)) hasLinkLikeText = true;
+    });
+    const joinedAll = allTexts.join("");
+    if (hasReleaseInfoFields) {
+      return { mode: "release-info-screenshot", slideCount, reason: "模板含发布账号/平台/标题/时间字段，匹配发布信息截图单图单页" };
+    }
+    if (/一页贴|长图|发布剪报/.test(joinedAll)) {
+      return { mode: "clippings", slideCount, reason: "模板含发布剪报/一页贴长图版式，匹配发布剪报多图铺页" };
+    }
+    if (hasLinkLikeText) {
+      return { mode: "link-screenshot", slideCount, reason: "模板含视频序号/链接文本框，匹配链接截图单图单页" };
+    }
+    if (maxPicCount >= 3) {
+      return { mode: "clippings", slideCount, reason: "模板单页含多个图片占位，按发布剪报多图铺页处理" };
+    }
+    return { mode: "link-screenshot", slideCount, reason: "未识别到明确字段，默认按链接截图单图单页处理" };
   }
 
   async function readImagesFromZipFile(file) {
@@ -131,12 +217,9 @@
     return { images, imageEntries };
   }
 
-  async function buildFromImages(images, sourceName) {
+  async function buildFromImages(images, sourceName, options = {}) {
     const pagePlan = createPagePlan(images);
-    const templateResponse = await fetch(chrome.runtime.getURL(CLIPPINGS_TEMPLATE_FILE));
-    if (!templateResponse.ok) throw new Error("无法读取内置 PPT 模板");
-    const templateEntries = parseZipEntries(await templateResponse.arrayBuffer());
-    const files = await readAllZipFiles(templateEntries);
+    const files = await loadTemplateFiles(CLIPPINGS_TEMPLATE_FILE, options.templateBytes, "无法读取内置 PPT 模板");
     const bytes = buildPptx(files, pagePlan);
     if (bytes.length > MAX_OUTPUT_BYTES) throw new Error(`生成后的 PPT 超过 ${formatBytes(MAX_OUTPUT_BYTES)}，请减少图片数量或先压缩图片`);
     return {
@@ -149,11 +232,8 @@
     };
   }
 
-  async function buildLinkScreenshotFromImages(images, sourceName, tasks = []) {
-    const templateResponse = await fetch(chrome.runtime.getURL(LINK_SCREENSHOT_TEMPLATE_FILE));
-    if (!templateResponse.ok) throw new Error("无法读取链接截图单图单页模板");
-    const templateEntries = parseZipEntries(await templateResponse.arrayBuffer());
-    const files = await readAllZipFiles(templateEntries);
+  async function buildLinkScreenshotFromImages(images, sourceName, tasks = [], options = {}) {
+    const files = await loadTemplateFiles(LINK_SCREENSHOT_TEMPLATE_FILE, options.templateBytes, "无法读取链接截图单图单页模板");
     const items = buildLinkScreenshotItems(images, tasks);
     const bytes = buildLinkScreenshotPptx(files, items);
     if (bytes.length > MAX_OUTPUT_BYTES) throw new Error(`生成后的 PPT 超过 ${formatBytes(MAX_OUTPUT_BYTES)}，请减少图片数量或先压缩图片`);
@@ -168,16 +248,31 @@
   }
 
   async function buildReleaseInfoScreenshotFromImages(images, sourceName, tasks = [], options = {}) {
-    const templateResponse = await fetch(chrome.runtime.getURL(RELEASE_INFO_SCREENSHOT_TEMPLATE_FILE));
-    if (!templateResponse.ok) throw new Error("无法读取发布信息截图单图单页模板");
-    const templateEntries = parseZipEntries(await templateResponse.arrayBuffer());
-    const files = await readAllZipFiles(templateEntries);
+    const files = await loadTemplateFiles(RELEASE_INFO_SCREENSHOT_TEMPLATE_FILE, options.templateBytes, "无法读取发布信息截图单图单页模板");
     const items = buildReleaseInfoScreenshotItems(images, tasks, options);
-    const bytes = buildReleaseInfoScreenshotPptx(files, items);
+    const bytes = buildReleaseInfoScreenshotPptx(files, items, { preserveTemplateLayout: Boolean(options.templateBytes) });
     if (bytes.length > MAX_OUTPUT_BYTES) throw new Error(`生成后的 PPT 超过 ${formatBytes(MAX_OUTPUT_BYTES)}，请减少图片数量或先压缩图片`);
     return {
       bytes,
       fileName: buildReleaseInfoScreenshotOutputFileName(sourceName),
+      imageCount: images.length,
+      slideCount: items.length,
+      imagesPerSlide: 1,
+      grid: "1×1",
+    };
+  }
+
+  async function buildDawanquFromImages(images, sourceName, tasks = [], options = {}) {
+    const files = await loadTemplateFiles(DAWANQU_TEMPLATE_FILE, options.templateBytes, "无法读取大湾区崭新模版");
+    const items = buildReleaseInfoScreenshotItems(images, tasks, options);
+    // The 大湾区崭新模版 keeps its own branded title and screenshot placeholder,
+    // so always preserve the template layout and only swap the screenshot and
+    // fill the 发布账号/平台/标题/链接/时间 info fields in place.
+    const bytes = buildReleaseInfoScreenshotPptx(files, items, { preserveTemplateLayout: true });
+    if (bytes.length > MAX_OUTPUT_BYTES) throw new Error(`生成后的 PPT 超过 ${formatBytes(MAX_OUTPUT_BYTES)}，请减少图片数量或先压缩图片`);
+    return {
+      bytes,
+      fileName: buildDawanquOutputFileName(sourceName),
       imageCount: images.length,
       slideCount: items.length,
       imagesPerSlide: 1,
@@ -575,13 +670,16 @@
     return createZip(Array.from(files.entries()).map(([name, data]) => ({ name, data })));
   }
 
-  function buildReleaseInfoScreenshotPptx(files, items) {
+  function buildReleaseInfoScreenshotPptx(files, items, options = {}) {
+    const preserveTemplateLayout = Boolean(options.preserveTemplateLayout);
     const presentationDoc = parseXml(decodeText(files.get("ppt/presentation.xml")));
     const presentationRelsDoc = parseXml(decodeText(files.get("ppt/_rels/presentation.xml.rels")));
     const contentTypesDoc = parseXml(decodeText(files.get("[Content_Types].xml")));
     const slides = getPresentationSlides(presentationDoc, presentationRelsDoc, files);
     if (!slides.length) throw new Error("发布信息截图单图单页模板中没有幻灯片");
-    const templateIndex = Math.min(RELEASE_INFO_TEMPLATE_INDEX, slides.length - 1);
+    const templateIndex = preserveTemplateLayout
+      ? findReleaseInfoTemplateSlideIndex(slides, files)
+      : Math.min(RELEASE_INFO_TEMPLATE_INDEX, slides.length - 1);
     const templateSlide = slides[templateIndex];
     const baseSlideXml = decodeText(files.get(`ppt/${templateSlide.target}`));
     const baseSlideFileName = templateSlide.target.split("/").pop();
@@ -606,7 +704,9 @@
       };
       files.set(`ppt/media/${mediaName}`, item.image.data);
       const slideRels = buildLinkScreenshotRelationships(baseRelsXml, imageLink);
-      const slideXml = buildReleaseInfoScreenshotSlideXml(baseSlideXml, imageLink, item);
+      const slideXml = preserveTemplateLayout
+        ? buildReleaseInfoTemplateSlideXml(baseSlideXml, imageLink, item)
+        : buildReleaseInfoScreenshotSlideXml(baseSlideXml, imageLink, item);
       files.set(`ppt/${slideTarget}`, encodeText(slideXml));
       files.set(relsPath, encodeText(slideRels));
       ensureSlideOverride(contentTypesDoc, `/ppt/${slideTarget}`);
@@ -701,12 +801,75 @@
     spTree.appendChild(createTextBoxNode(doc, nextShapeId, "PPT 大标题", item.title, RELEASE_INFO_LAYOUT.title, { fontSize: 20, bold: true, borderColor: "e15252" }));
     nextShapeId += 1;
     buildReleaseInfoRows(item).forEach((row, index) => {
-      spTree.appendChild(createTextBoxNode(doc, nextShapeId, `发布信息 ${index + 1}`, row.text, row.position, { fontSize: 14 }));
+      spTree.appendChild(createTextBoxNode(doc, nextShapeId, `发布信息 ${index + 1}`, row.text, row.position, { fontSize: row.fontSize }));
       nextShapeId += 1;
     });
     const pic = createPictureNode(doc, nextShapeId, item.account || "发布截图", image.relId, buildReleaseInfoPicturePosition(image));
     spTree.appendChild(pic);
     return serializeXml(doc);
+  }
+
+  function findReleaseInfoTemplateSlideIndex(slides, files) {
+    const withFields = slides.findIndex((slide) => getSlideTexts(files, slide.target).join("").match(/发布账号|发布平台|发布标题|发布时间/));
+    if (withFields >= 0) return withFields;
+    return Math.min(RELEASE_INFO_TEMPLATE_INDEX, slides.length - 1);
+  }
+
+  // Custom-template path: keep the uploaded template's top title box and screenshot
+  // placeholder positions unchanged, only swap the picture image and fill the
+  // 发布账号/平台/标题/链接/时间 info text box in place.
+  function buildReleaseInfoTemplateSlideXml(baseSlideXml, image, item) {
+    const doc = parseXml(baseSlideXml);
+    const shapes = Array.from(doc.getElementsByTagNameNS(PML, "sp"));
+    const infoShape = findReleaseInfoFieldShape(shapes);
+    if (infoShape) fillReleaseInfoFieldShape(infoShape, item);
+    // The top title box (文本框1) is intentionally left untouched so the uploaded
+    // template's title text and position stay unchanged.
+    const placeholder = Array.from(doc.getElementsByTagNameNS(PML, "pic"))[0] || null;
+    const position = placeholder ? getShapeGeometry(placeholder) : buildReleaseInfoPicturePosition(image);
+    const fitted = fitPictureIntoBox(image, position);
+    const spTree = doc.getElementsByTagNameNS(PML, "spTree")[0];
+    // Remove screenshot annotation boxes (e.g. "截图参考") — they are only layout
+    // hints and should not appear over the inserted screenshot.
+    removeScreenshotHintShapes(doc, infoShape);
+    if (placeholder) placeholder.parentNode.removeChild(placeholder);
+    const pic = createPictureNode(doc, getMaxShapeId(doc) + 1, item.account || "发布截图", image.relId, fitted);
+    spTree.appendChild(pic);
+    return serializeXml(doc);
+  }
+
+  function removeScreenshotHintShapes(doc, infoShape) {
+    Array.from(doc.getElementsByTagNameNS(PML, "sp")).forEach((shape) => {
+      if (shape === infoShape) return;
+      const text = getTextContent(shape);
+      if (text && SCREENSHOT_HINT_PATTERN.test(text)) shape.parentNode.removeChild(shape);
+    });
+  }
+
+  function findReleaseInfoFieldShape(shapes) {
+    return shapes.find((shape) => /发布账号|发布平台|发布标题|发布时间/.test(getTextContent(shape))) || null;
+  }
+
+  function fillReleaseInfoFieldShape(shape, item) {
+    const lines = [
+      `发布账号：${item.account || ""}`,
+      `发布平台：${item.platform || ""}`,
+      `发布标题：${item.publishTitle || ""}`,
+      `发布链接：${item.link || ""}`,
+      `发布时间：${item.time || ""}`,
+    ];
+    setShapeParagraphs(shape, lines);
+  }
+
+  function fitPictureIntoBox(image, box) {
+    const aspect = image.width && image.height ? image.width / image.height : 16 / 9;
+    const fit = fitInsideCell(aspect, box.cx, box.cy);
+    return {
+      x: Math.round(box.x + (box.cx - fit.cx) / 2),
+      y: Math.round(box.y + (box.cy - fit.cy) / 2),
+      cx: Math.round(fit.cx),
+      cy: Math.round(fit.cy),
+    };
   }
 
   function buildReleaseInfoRows(item) {
@@ -718,22 +881,41 @@
       `发布链接：${item.link || ""}`,
       `发布时间：${item.time || ""}`,
     ];
+    const heights = buildReleaseInfoRowHeights(fields, layout);
     let y = layout.y;
     return fields.map((text, index) => {
-      const isLast = index === fields.length - 1;
-      const cy = Math.min(buildReleaseInfoTextHeight(text, layout), Math.max(layout.cy, layout.maxBottom - y - (isLast ? 0 : layout.gap)));
-      const row = { text, position: { x: layout.x, y, cx: layout.cx, cy } };
+      const cy = heights[index] || layout.cy;
+      const fontSize = getReleaseInfoFontSizeForHeight(text, layout, cy);
+      const row = { text, fontSize, position: { x: layout.x, y, cx: layout.cx, cy } };
       y += cy + layout.gap;
       return row;
     });
   }
 
-  function buildReleaseInfoTextHeight(text, layout) {
+  function buildReleaseInfoRowHeights(fields, layout) {
+    const availableHeight = Math.max(fields.length * layout.cy, layout.maxBottom - layout.y - Math.max(0, fields.length - 1) * layout.gap);
+    const desiredHeights = fields.map((text) => buildReleaseInfoTextHeight(text, layout, layout.fontSize || 14));
+    const minHeights = fields.map(() => layout.cy);
+    const extraHeight = Math.max(0, availableHeight - minHeights.reduce((total, height) => total + height, 0));
+    const needs = desiredHeights.map((height, index) => Math.max(0, height - minHeights[index]));
+    const totalNeed = needs.reduce((total, need) => total + need, 0);
+    if (!totalNeed) return minHeights;
+    return minHeights.map((height, index) => height + extraHeight * (needs[index] / totalNeed));
+  }
+
+  function getReleaseInfoFontSizeForHeight(text, layout, maxHeight) {
+    const sizes = Array.isArray(layout.fontSizes) && layout.fontSizes.length ? layout.fontSizes : [layout.fontSize || 14];
+    return sizes.find((fontSize) => buildReleaseInfoTextHeight(text, layout, fontSize) <= maxHeight) || sizes[sizes.length - 1];
+  }
+
+  function buildReleaseInfoTextHeight(text, layout, fontSize = layout.fontSize || 14) {
+    const baseFontSize = layout.fontSize || 14;
     const lineCount = String(text || "").split(/\r?\n/).reduce((count, line) => {
-      const width = Math.max(1, layout.charsPerLine);
+      const width = Math.max(1, layout.charsPerLine * (baseFontSize / fontSize));
       return count + Math.max(1, Math.ceil(getReleaseInfoTextUnits(line) / width));
     }, 0);
-    return Math.max(layout.cy, lineCount * layout.lineHeight + 0.16 * INCH_EMU);
+    const scale = fontSize / baseFontSize;
+    return Math.max(layout.cy, lineCount * layout.lineHeight * scale + 0.16 * INCH_EMU * scale);
   }
 
   function getReleaseInfoTextUnits(text) {
@@ -764,9 +946,22 @@
   function findReleaseSlideIndex(slides, files) {
     const exact = slides.findIndex((slide) => getSlideTexts(files, slide.target).some((text) => text === "发布剪报"));
     if (exact >= 0) return exact;
+    const placeholder = slides.findIndex((slide) => getSlideTexts(files, slide.target).some((text) => /一页贴|长图|占位/.test(text)));
+    if (placeholder >= 0) return placeholder;
     const templateThirdPage = slides.findIndex((slide) => slide.target === "slides/slide3.xml");
     if (templateThirdPage >= 0) return templateThirdPage;
+    // Custom template fallback: use the slide that carries an image placeholder,
+    // otherwise the last slide.
+    const withPicture = slides.findIndex((slide) => slideHasPicture(files, slide.target));
+    if (withPicture >= 0) return withPicture;
+    if (slides.length) return slides.length - 1;
     throw new Error("模板中找不到发布剪报页");
+  }
+
+  function slideHasPicture(files, target) {
+    if (!files.has(`ppt/${target}`)) return false;
+    const doc = parseXml(decodeText(files.get(`ppt/${target}`)));
+    return doc.getElementsByTagNameNS(PML, "pic").length > 0;
   }
 
   function getSlideTexts(files, target) {
@@ -978,6 +1173,34 @@
     });
   }
 
+  // Rewrite a text box so each provided line becomes its own paragraph, reusing
+  // the template run's formatting (font size, color) when available.
+  function setShapeParagraphs(shape, lines) {
+    const doc = shape.ownerDocument;
+    const txBody = shape.getElementsByTagNameNS(DML, "txBody")[0];
+    if (!txBody) {
+      setShapeText(shape, lines.join("\n"));
+      return;
+    }
+    const sampleRun = txBody.getElementsByTagNameNS(DML, "r")[0] || null;
+    const sampleRPr = sampleRun ? sampleRun.getElementsByTagNameNS(DML, "rPr")[0] : null;
+    Array.from(txBody.getElementsByTagNameNS(DML, "p")).forEach((paragraph) => paragraph.parentNode.removeChild(paragraph));
+    lines.forEach((line) => {
+      const paragraph = doc.createElementNS(DML, "a:p");
+      const run = doc.createElementNS(DML, "a:r");
+      if (sampleRPr) {
+        run.appendChild(sampleRPr.cloneNode(true));
+      } else {
+        run.appendChild(doc.createElementNS(DML, "a:rPr")).setAttribute("lang", "zh-CN");
+      }
+      const text = doc.createElementNS(DML, "a:t");
+      text.textContent = String(line == null ? "" : line);
+      run.appendChild(text);
+      paragraph.appendChild(run);
+      txBody.appendChild(paragraph);
+    });
+  }
+
   function getShapeGeometry(shape) {
     const off = shape.getElementsByTagNameNS(DML, "off")[0];
     const ext = shape.getElementsByTagNameNS(DML, "ext")[0];
@@ -1025,6 +1248,12 @@
     const base = String(sourceName || "发布信息截图单图单页").replace(/\.[^.]+$/, "").replace(/[\\/:*?"<>|\r\n\t]+/g, "").trim() || "发布信息截图单图单页";
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
     return `${getSessionOutputDir(sourceName)}/${base}_发布信息截图单图单页_${timestamp}.pptx`;
+  }
+
+  function buildDawanquOutputFileName(sourceName) {
+    const base = String(sourceName || "大湾区崭新模版").replace(/\.[^.]+$/, "").replace(/[\\/:*?"<>|\r\n\t]+/g, "").trim() || "大湾区崭新模版";
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    return `${getSessionOutputDir(sourceName)}/${base}_大湾区崭新模版_${timestamp}.pptx`;
   }
 
   function parseXml(text) {
@@ -1177,12 +1406,15 @@
   window.PptxClippings = {
     inspectZipFile,
     inspectImageFiles,
+    analyzeTemplateFile,
     buildFromZipFile,
     buildFromImageFiles,
     buildLinkScreenshotFromZipFile,
     buildLinkScreenshotFromImageFiles,
     buildReleaseInfoScreenshotFromZipFile,
     buildReleaseInfoScreenshotFromImageFiles,
+    buildDawanquFromZipFile,
+    buildDawanquFromImageFiles,
     buildLinkScreenshotItems,
     downloadResult,
   };
