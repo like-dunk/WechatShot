@@ -38,6 +38,9 @@ config.yaml
 *.xls
 *.csv
 
+# Tools directory
+tools/
+
 # Temporary files
 .tmp/
 tmp/
