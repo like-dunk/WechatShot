@@ -1003,11 +1003,10 @@
 
   function splitBoxVertically(box) {
     const halfCy = Math.round(box.cy / 2);
-    const bottom_y = box.y + halfCy;
-    const bottom_cy = box.cy - halfCy;
-    const top = { x: box.x, y: box.y, cx: box.cx, cy: halfCy };
-    const bottom = { x: box.x, y: bottom_y, cx: box.cx, cy: bottom_cy };
-    return [top, bottom];
+    return [
+      { x: box.x, y: box.y, cx: box.cx, cy: halfCy },
+      { x: box.x, y: box.y + halfCy, cx: box.cx, cy: box.cy - halfCy },
+    ];
   }
 
   // auxImages 固定顺序 [粉丝图, 播放图]（由调用方过滤 null 后传入）：单张辅助图铺满整个
