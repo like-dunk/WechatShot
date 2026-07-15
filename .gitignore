@@ -41,6 +41,9 @@ config.yaml
 # Tools directory
 tools/
 
+# Screenshots and generated images
+*.png
+
 # Temporary files
 .tmp/
 tmp/

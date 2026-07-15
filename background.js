@@ -16,8 +16,17 @@ const DOUYIN_NAVIGATION_TIMEOUT_MS = 60000;
 const DOUYIN_DOM_LOAD_TIMEOUT_MS = 30000;
 const DOUYIN_POST_LOAD_WAIT_MS = 2500;
 const DOUYIN_POST_PREPARE_WAIT_MS = 1500;
-const DOUYIN_FALLBACK_RENDER_WAIT_MS = 3000;
 const DOUYIN_COOLDOWN_MS = 3000;
+// 抖音任务判死后延后重试：同 IP 立即 reload 同一作品页是高危自动化信号
+const DOUYIN_RETRY_DELAY_MS = 45000;
+// 任务间隔随机抖动：打破固定 3 秒任务心跳的自动化指纹
+const DOUYIN_DELAY_JITTER_MS = 2000;
+// 混跑批量时非抖音快门会抢占 active tab 使抖音页 hidden、首帧检测(rVFC)停摆，
+// 此守护间隔在快门空闲时把抖音 tab 拉回前台
+const DOUYIN_VISIBILITY_KEEPALIVE_MS = 2000;
+// 截图纯色质检（灰度模式，只记日志不判死）：64px 降采样后主色占比阈值
+const SCREENSHOT_PURITY_SAMPLE_SIZE = 64;
+const SCREENSHOT_PURITY_DOMINANT_RATIO = 0.99;
 const DOUYIN_BATCH_SIZE = 20;
 const DOUYIN_PROXY_ROTATION_INTERVAL = DOUYIN_BATCH_SIZE;
 const CLASH_DEFAULT_CONTROLLER_URL = "http://127.0.0.1:9090";
@@ -74,6 +83,8 @@ let state = structuredClone(DEFAULT_STATE);
 let workers = [];
 let nextCaptureAt = 0;
 let captureChain = Promise.resolve();
+// 快门串行锁执行中标志：可见性守护据此避开快门窗口，防止把并发截图切到错误 tab
+let captureBusy = false;
 let captureWindowId = null;
 let captureWindowPromise = null;
 let captureWindowUseIncognito = false;
@@ -340,6 +351,11 @@ async function workerLoop(workerId) {
       const task = nextTask();
       if (!task) break;
       if (task.__wait) {
+        // MV3 service worker 约 30 秒无扩展 API 调用即被回收，而延后重试等待期可长达 45 秒，
+        // 纯 setTimeout 空转会让整批运行随 SW 一起消失；廉价 storage 读用于重置空闲计时
+        try {
+          await chrome.storage.session.get("__keepalive");
+        } catch {}
         await sleep(500);
         continue;
       }
@@ -373,7 +389,13 @@ async function workerLoop(workerId) {
           const shouldRetry = task.attempts < 2 && !state.stopped;
           if (shouldRetry) {
             task.status = "PENDING";
-            log(`[${task.listIndex + 1}/${state.tasks.length}] 重试 ${task.fileName}: ${error.message}`, "warning");
+            if (isDouyin) {
+              // 延后重试：同 IP 立即 reload 同一作品页是高危自动化信号，判死后隔一段时间再排队
+              task.retryNotBeforeTs = Date.now() + DOUYIN_RETRY_DELAY_MS;
+              log(`[${task.listIndex + 1}/${state.tasks.length}] ${Math.round(DOUYIN_RETRY_DELAY_MS / 1000)} 秒后重试 ${task.fileName}: ${error.message}`, "warning");
+            } else {
+              log(`[${task.listIndex + 1}/${state.tasks.length}] 重试 ${task.fileName}: ${error.message}`, "warning");
+            }
           } else if (state.stopped) {
             task.status = "STOPPED";
             task.error = "任务已停止";
@@ -418,20 +440,30 @@ async function processTask(tabId, task) {
     const loadStartedAt = Date.now();
     await loadTaskUrl(tabId, task);
     perf.loadMs = Date.now() - loadStartedAt;
-    const postLoadWaitStartedAt = Date.now();
-    await sleep(getPostLoadWaitMs(task));
-    perf.postLoadWaitMs = Date.now() - postLoadWaitStartedAt;
-    const prepareStartedAt = Date.now();
-    const prepareResult = await prepareTab(tabId, task);
-    validatePreparedPage(prepareResult, task);
-    perf.prepareMs = Date.now() - prepareStartedAt;
-    const postPrepareWaitStartedAt = Date.now();
-    await sleep(getPostPrepareWaitMs(task, prepareResult));
-    perf.postPrepareWaitMs = Date.now() - postPrepareWaitStartedAt;
-    const captureResult = await captureTabSerial(tabId, getTaskUseIncognito(task));
+    // 混跑批量时非抖音快门会抢占 active tab，抖音页 hidden 后渲染停摆、首帧检测无法推进，
+    // 从加载完成到快门结束全程由可见性守护兜底拉回前台
+    const stopVisibilityKeeper = startDouyinVisibilityKeeper(tabId, task);
+    let captureResult;
+    try {
+      const postLoadWaitStartedAt = Date.now();
+      await sleep(getPostLoadWaitMs(task));
+      perf.postLoadWaitMs = Date.now() - postLoadWaitStartedAt;
+      const prepareStartedAt = Date.now();
+      const prepareResult = await prepareTab(tabId, task);
+      validatePreparedPage(prepareResult, task);
+      logPrepareObservations(task, prepareResult);
+      perf.prepareMs = Date.now() - prepareStartedAt;
+      const postPrepareWaitStartedAt = Date.now();
+      await sleep(getPostPrepareWaitMs(task));
+      perf.postPrepareWaitMs = Date.now() - postPrepareWaitStartedAt;
+      captureResult = await captureTabSerial(tabId, getTaskUseIncognito(task), task.platform);
+    } finally {
+      stopVisibilityKeeper();
+    }
     Object.assign(perf, captureResult.perf);
     const dataUrl = captureResult.dataUrl;
     if (!dataUrl || dataUrl.length < 5000) throw new Error("截图数据过小，可能是页面空白、未登录、加载失败或弹窗遮挡");
+    await logScreenshotPurity(task, dataUrl);
     const downloadStartedAt = Date.now();
     await downloadScreenshot(dataUrl, task.fileName);
     perf.downloadMs = Date.now() - downloadStartedAt;
@@ -595,8 +627,13 @@ function buildCaptureWindowCreateOptions(captureSize, useIncognito) {
 }
 
 function nextTask() {
-  const pendingTasks = state.tasks.filter((item) => item.status === "PENDING");
-  if (!pendingTasks.length) return null;
+  const allPendingTasks = state.tasks.filter((item) => item.status === "PENDING");
+  if (!allPendingTasks.length) return null;
+
+  // 延后重试的任务未到期前不派发；只剩未到期任务时让 worker 等待而非退出，避免任务被永久搁置
+  const now = Date.now();
+  const pendingTasks = allPendingTasks.filter((item) => !item.retryNotBeforeTs || now >= item.retryNotBeforeTs);
+  if (!pendingTasks.length) return { __wait: true };
 
   const douyinRunning = state.runningDouyinCount > 0;
 
@@ -984,14 +1021,20 @@ async function prepareTab(tabId, task = {}) {
       files: ["content.js"],
     });
   } catch {}
+  const platform = task.platform || detectPlatformFromUrl(task.url);
   const [{ result } = {}] = await chrome.scripting.executeScript({
     target: { tabId },
-    args: [{ platform: task.platform || detectPlatformFromUrl(task.url), url: task.url }],
+    args: [{ platform, url: task.url }],
     func: (options) => {
       if (window.shipinhaoPrepareForScreenshot) return window.shipinhaoPrepareForScreenshot(options);
-      return { ok: true, message: "页面准备函数未加载" };
+      return { ok: true, prepareMissing: true, message: "页面准备函数未加载" };
     },
   });
+  if (platform === "douyin" && result && result.prepareMissing) {
+    // 页面刚重载时准备函数缺失会绕过首帧闸门与弹窗清理（黑图静默复发通道），
+    // 抖音件改为判失败走既有重试；其他平台维持宽松放行，避免注入偶发失败误伤
+    return { ok: false, code: "PREPARE_NOT_READY", message: "抖音页面准备脚本未就绪（页面可能刚重载），已中止本次截图待重试 [PREPARE_NOT_READY]" };
+  }
   return result;
 }
 
@@ -1126,7 +1169,8 @@ function getTaskUseIncognito(task, options = state.options) {
 }
 
 function getTaskDelayMs(task) {
-  if (task.platform === "douyin") return Math.max(state.options.delayMs || 0, DOUYIN_COOLDOWN_MS);
+  // 随机抖动打破固定 3 秒任务心跳的自动化指纹
+  if (task.platform === "douyin") return Math.max(state.options.delayMs || 0, DOUYIN_COOLDOWN_MS) + Math.floor(Math.random() * DOUYIN_DELAY_JITTER_MS);
   return state.options.delayMs;
 }
 
@@ -1134,10 +1178,10 @@ function getPostLoadWaitMs(task) {
   return task.platform === "douyin" ? DOUYIN_POST_LOAD_WAIT_MS : 1200;
 }
 
-function getPostPrepareWaitMs(task, prepareResult) {
-  if (task.platform !== "douyin") return 800;
-  if (prepareResult && prepareResult.pageType === "video" && !prepareResult.videoReady) return DOUYIN_FALLBACK_RENDER_WAIT_MS;
-  return DOUYIN_POST_PREPARE_WAIT_MS;
+function getPostPrepareWaitMs(task) {
+  // 原 videoReady=false 时"多等 3 秒后兜底硬截"的分支已删除：
+  // 首帧未确认的任务现在由 content.js 返回 ok:false 走重试，不会到达此处
+  return task.platform === "douyin" ? DOUYIN_POST_PREPARE_WAIT_MS : 800;
 }
 
 async function throttleCapture() {
@@ -1148,29 +1192,116 @@ async function throttleCapture() {
   return waitMs;
 }
 
-function captureTabSerial(tabId, useIncognito = false) {
+function captureTabSerial(tabId, useIncognito = false, platform = "") {
   const queuedAt = Date.now();
   const job = captureChain.then(async () => {
     const lockStartedAt = Date.now();
     const perf = { waitCaptureLockMs: lockStartedAt - queuedAt };
-    if (state.stopped) throw new Error("任务已停止");
-    const throttleStartedAt = Date.now();
-    perf.throttleMs = await throttleCapture();
-    perf.throttleTotalMs = Date.now() - throttleStartedAt;
-    if (state.stopped) throw new Error("任务已停止");
-    const windowId = await ensureCaptureWindow(useIncognito);
-    const activateStartedAt = Date.now();
-    await activateTabForCapture(tabId, windowId);
-    perf.activateMs = Date.now() - activateStartedAt;
-    if (state.stopped) throw new Error("任务已停止");
-    const captureStartedAt = Date.now();
-    const dataUrl = await captureVisibleTab(windowId);
-    perf.captureMs = Date.now() - captureStartedAt;
-    perf.captureLockMs = Date.now() - lockStartedAt;
-    return { dataUrl, perf };
+    captureBusy = true;
+    try {
+      if (state.stopped) throw new Error("任务已停止");
+      const throttleStartedAt = Date.now();
+      perf.throttleMs = await throttleCapture();
+      perf.throttleTotalMs = Date.now() - throttleStartedAt;
+      if (state.stopped) throw new Error("任务已停止");
+      const windowId = await ensureCaptureWindow(useIncognito);
+      const activateStartedAt = Date.now();
+      await activateTabForCapture(tabId, windowId);
+      perf.activateMs = Date.now() - activateStartedAt;
+      if (state.stopped) throw new Error("任务已停止");
+      if (platform === "douyin") {
+        // 快门前终检：弹窗可能在 prepare 清理之后重新弹出，此处是漏拍前的最后复核点
+        const sweepStartedAt = Date.now();
+        const sweep = await runFinalPopupSweep(tabId);
+        perf.finalSweepMs = Date.now() - sweepStartedAt;
+        if (sweep && sweep.sweepMissing) throw new Error("快门前终检脚本未就绪（页面可能刚重载），已中止本次截图待重试 [SWEEP_NOT_READY]");
+        if (sweep && sweep.clean === false) throw new Error("快门前检测到残留弹窗且无法移除，已中止本次截图待重试 [POPUP_PERSISTENT]");
+      }
+      const captureStartedAt = Date.now();
+      const dataUrl = await captureVisibleTab(windowId);
+      perf.captureMs = Date.now() - captureStartedAt;
+      perf.captureLockMs = Date.now() - lockStartedAt;
+      return { dataUrl, perf };
+    } finally {
+      captureBusy = false;
+    }
   });
   captureChain = job.catch(() => {});
   return job;
+}
+
+async function runFinalPopupSweep(tabId) {
+  // 终检函数未加载说明页面可能刚重载（弹窗清理与哨兵同样缺位），交由调用方中止走重试，
+  // 不再视为干净放行——那会重新打开黑图/弹窗静默漏拍的旁路
+  const [{ result } = {}] = await chrome.scripting.executeScript({
+    target: { tabId },
+    args: [{ platform: "douyin" }],
+    func: (options) => {
+      if (window.shipinhaoFinalSweep) return window.shipinhaoFinalSweep(options);
+      return { sweepMissing: true };
+    },
+  });
+  return result;
+}
+
+function startDouyinVisibilityKeeper(tabId, task) {
+  if (task.platform !== "douyin") return () => {};
+  const timer = setInterval(async () => {
+    // 快门执行期间(captureBusy)跳过，避免把并发截图切到抖音 tab 造成错页保存
+    if (captureBusy || state.stopped) return;
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (captureBusy || tab.active) return;
+      await chrome.tabs.update(tabId, { active: true });
+    } catch {}
+  }, DOUYIN_VISIBILITY_KEEPALIVE_MS);
+  return () => clearInterval(timer);
+}
+
+function logPrepareObservations(task, prepareResult) {
+  if (task.platform !== "douyin" || !prepareResult) return;
+  // /note/ 图文页本次不设硬闸门，先记观察日志评估黑屏事故是否波及图文页
+  const pending = prepareResult.pageType === "note" ? prepareResult.notePendingImages || 0 : 0;
+  if (pending > 0) log(`${task.fileName} 图文页仍有 ${pending} 张图片未加载完成，本次仍照常截图 [NOTE_IMAGES_PENDING]`, "warning");
+  // 无 video 元素的 /video/ 页多为作品失效提示或图集，照常截图留证但记日志便于甄别
+  if (prepareResult.noVideoElement) log(`${task.fileName} 作品页无视频元素（可能已删除/下架或为图集），已照常截图留证 [NO_VIDEO_ELEMENT]`, "warning");
+}
+
+async function logScreenshotPurity(task, dataUrl) {
+  // 纯色质检（灰度模式）：只记日志不判死，覆盖快门瞬间合成异常输出全黑图的残余场景，
+  // 观察期后再决定是否升级为参与重试判定
+  if (task.platform !== "douyin") return;
+  try {
+    const ratio = await computeDominantColorRatio(dataUrl);
+    if (ratio >= SCREENSHOT_PURITY_DOMINANT_RATIO) {
+      log(`${task.fileName} 截图疑似纯色（主色占比 ${(ratio * 100).toFixed(1)}%），请人工复核 [PURE_COLOR_SUSPECT]`, "warning");
+    }
+  } catch {}
+}
+
+async function computeDominantColorRatio(dataUrl) {
+  const blob = await (await fetch(dataUrl)).blob();
+  const bitmap = await createImageBitmap(blob, { resizeWidth: SCREENSHOT_PURITY_SAMPLE_SIZE, resizeHeight: SCREENSHOT_PURITY_SAMPLE_SIZE });
+  const canvas = new OffscreenCanvas(SCREENSHOT_PURITY_SAMPLE_SIZE, SCREENSHOT_PURITY_SAMPLE_SIZE);
+  const context = canvas.getContext("2d");
+  context.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  const imageData = context.getImageData(0, 0, SCREENSHOT_PURITY_SAMPLE_SIZE, SCREENSHOT_PURITY_SAMPLE_SIZE);
+  return computeDominantRatioFromPixels(imageData.data);
+}
+
+function computeDominantRatioFromPixels(data) {
+  // 每通道量化到 16 级：PNG 压缩与渐变噪声会让相邻像素有细微差异，量化后同色像素才能聚在一起
+  const counts = new Map();
+  let dominant = 0;
+  const total = data.length / 4;
+  for (let i = 0; i < data.length; i += 4) {
+    const key = ((data[i] >> 4) << 8) | ((data[i + 1] >> 4) << 4) | (data[i + 2] >> 4);
+    const count = (counts.get(key) || 0) + 1;
+    counts.set(key, count);
+    if (count > dominant) dominant = count;
+  }
+  return total ? dominant / total : 0;
 }
 
 async function activateTabForCapture(tabId, windowId) {
@@ -1408,6 +1539,7 @@ function normalizeOptions(options, tasks = []) {
     autoPptMode: normalizeAutoPptMode(options.autoPptMode),
     autoPptTitle: String(options.autoPptTitle || ""),
     autoPptTemplateId: String(options.autoPptTemplateId || ""),
+    autoPptFanSourceId: String(options.autoPptFanSourceId || ""),
     enableSupplementRepairZip: Boolean(options.enableSupplementRepairZip),
     captureSize: normalizeCaptureSize(options),
   };
@@ -1540,6 +1672,7 @@ function buildScreenshotTaskMeta(task) {
     listIndex: task.listIndex,
     rowNumber: task.rowNumber,
     sequence: task.sequence,
+    importSequence: task.importSequence,
     nickname: task.nickname,
     url: task.url,
     platform: task.platform,
@@ -1611,6 +1744,7 @@ async function saveAutoPptSessionFromState() {
       autoPptMode: state.options.autoPptMode || "clippings",
       autoPptTitle: state.options.autoPptTitle || "",
       autoPptTemplateId: state.options.autoPptTemplateId || "",
+      autoPptFanSourceId: state.options.autoPptFanSourceId || "",
     },
     screenshots: buildSuccessScreenshotRecords(),
     autoPptGenerated: Boolean(state.autoPptGenerated),
@@ -1916,7 +2050,8 @@ function formatLocalTimestamp(date) {
 
 function sanitizeZipFileName(name) {
   const fileName = String(name || "截图.png").replace(/\\/g, "/").split("/").pop() || "截图.png";
-  return fileName.replace(/[\\/:*?"<>|\r\n\t]+/g, "").trim() || "截图.png";
+  // Windows 版 Chrome downloads API 禁止 ASCII ~，全角 ～（U+FF5E）视觉一致且跨平台可下载
+  return fileName.replace(/~/g, "\uFF5E").replace(/[\\/:*?"<>|\r\n\t]+/g, "").trim() || "截图.png";
 }
 
 function normalizeZipFileName(name) {
