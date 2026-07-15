@@ -54,7 +54,7 @@ const DOUYIN_DEFAULT_PROXY_NODE_NAMES = "🇭🇰 香港 IEPL 08,🇭🇰 香港
 const PPT_MODES = {
   clippings: {
     label: "发布剪报多图铺页",
-    info: "使用内置模板自动铺满发布剪报页；支持 ZIP 压缩包或截图文件夹，插件内生成建议 ≤2000 张、ZIP ≤2GB。",
+    info: "使用内置模板自动铺满发布剪报页；支持 ZIP 压缩包或截图文件夹，插件内生成建议 ≤5000 张、ZIP ≤2GB。",
   },
   "link-screenshot": {
     label: "链接截图单图单页",
@@ -70,7 +70,7 @@ const PPT_MODES = {
   },
 };
 const SUPPLEMENT_IMAGE_PATTERN = /\.(?:png|jpe?g|webp)$/i;
-const SUPPLEMENT_ZIP_SOURCE_LIMIT = 500 * 1024 * 1024;
+const SUPPLEMENT_ZIP_SOURCE_LIMIT = 2 * 1024 * 1024 * 1024;
 
 let allParsedTasks = [];
 let parsedTasks = [];
@@ -86,9 +86,14 @@ let currentImportFillMarks = null;
 // 选择与拖拽都会追加到这里再统一合并，避免后一次导入覆盖前一次。
 let importedTaskFiles = [];
 let currentPptSource = null;
+let currentPptFanSource = null;
+// 未手动上传粉丝量截图时的兜底来源：从已导入 Excel 里模糊匹配到「粉丝」的列中提取内嵌截图，
+// 已按「序号_昵称.ext」命名，可直接当作 fanImages 使用。手动上传的 currentPptFanSource 始终优先。
+let currentExcelFanImages = [];
 let currentPptTemplate = null;
 let currentSupplementSource = null;
 let pptSourceReadToken = 0;
+let pptFanSourceReadToken = 0;
 let isGeneratingPpt = false;
 let isAutoGeneratingPpt = false;
 let supplementSourceReadToken = 0;
@@ -127,6 +132,10 @@ const elements = {
   pptReleaseTitleInput: document.getElementById("pptReleaseTitleInput"),
   pptZipInput: document.getElementById("pptZipInput"),
   pptFolderInput: document.getElementById("pptFolderInput"),
+  pptFanSourcePicker: document.getElementById("pptFanSourcePicker"),
+  pptFanZipInput: document.getElementById("pptFanZipInput"),
+  pptFanFolderInput: document.getElementById("pptFanFolderInput"),
+  pptFanSourceInfo: document.getElementById("pptFanSourceInfo"),
   pptZipInfo: document.getElementById("pptZipInfo"),
   generatePptButton: document.getElementById("generatePptButton"),
   statusBadge: document.getElementById("statusBadge"),
@@ -185,6 +194,8 @@ function init() {
   elements.pptTemplateInput.addEventListener("change", handlePptTemplateChange);
   elements.pptZipInput.addEventListener("change", handlePptZipChange);
   elements.pptFolderInput.addEventListener("change", handlePptFolderChange);
+  elements.pptFanZipInput.addEventListener("change", handlePptFanZipChange);
+  elements.pptFanFolderInput.addEventListener("change", handlePptFanFolderChange);
   elements.generatePptButton.addEventListener("click", generatePpt);
   elements.startButton.addEventListener("click", startRun);
   elements.pauseButton.addEventListener("click", () => sendAction("pause"));
@@ -242,6 +253,20 @@ function setupUploadDropZones() {
     directory: true,
     onDrop: handlePptFolderFiles,
   });
+  if (elements.pptFanZipInput) {
+    setupUploadDropZone(elements.pptFanZipInput.closest(".ppt-source-action"), {
+      input: elements.pptFanZipInput,
+      multiple: false,
+      onDrop: (files) => handlePptFanZipFile(files[0]),
+    });
+  }
+  if (elements.pptFanFolderInput) {
+    setupUploadDropZone(elements.pptFanFolderInput.closest(".ppt-source-action"), {
+      input: elements.pptFanFolderInput,
+      directory: true,
+      onDrop: handlePptFanFolderFiles,
+    });
+  }
   setupUploadDropZone(elements.pptTemplateInput.closest(".ppt-source-action"), {
     input: elements.pptTemplateInput,
     multiple: false,
@@ -373,7 +398,8 @@ async function handleTaskFiles(files) {
       addLog(`解析失败，已跳过「${file.name}」：${error.message}`, "failed");
       continue;
     }
-    incoming.push({ fileName: file.name, rows: parsed.rows, fillMarks: parsed.fillMarks });
+    const fanImages = await extractFanImagesFromCellImages(parsed.rows, parsed.cellImages, file.name);
+    incoming.push({ fileName: file.name, rows: parsed.rows, fillMarks: parsed.fillMarks, fanImages });
   }
   if (!incoming.length) {
     if (!importedTaskFiles.length) elements.fileInfo.textContent = "解析失败：没有可导入的有效表格";
@@ -398,6 +424,11 @@ async function applyImportedTaskFiles() {
   }
   try {
     setBadge("解析中", "running");
+    currentExcelFanImages = importedTaskFiles.flatMap((file) => file.fanImages || []);
+    if (currentExcelFanImages.length) {
+      addLog(`已从 Excel 内嵌图片自动识别到 ${currentExcelFanImages.length} 张粉丝量截图，未手动上传时将按 Excel 序号+昵称自动匹配`, "success");
+    }
+    syncPptFanSourceInfo();
     if (importedTaskFiles.length === 1) {
       const only = importedTaskFiles[0];
       addLog(`开始解析：${only.fileName}`);
@@ -470,6 +501,8 @@ function resetImportState() {
   currentImportAnalysis = null;
   currentImportIsMerged = false;
   currentImportFillMarks = null;
+  currentExcelFanImages = [];
+  syncPptFanSourceInfo();
   elements.startButton.disabled = true;
 }
 
@@ -507,6 +540,7 @@ async function handleSupplementFiles(files) {
 
 function handlePptModeChange() {
   syncPptModeUi();
+  syncPptFanSourceInfo();
   if (currentPptSource) {
     elements.pptZipInfo.textContent = buildPptSourceInfo(currentPptSource.name, currentPptSource.imageCount);
     return;
@@ -517,6 +551,24 @@ function handlePptModeChange() {
 function syncPptModeUi() {
   const isReleaseInfoMode = elements.pptModeInput.value === "release-info-screenshot";
   const isCustomTemplate = elements.pptTemplateSourceInput.value === "custom" && Boolean(currentPptTemplate);
+  const showFanSource = isReleaseInfoLikeMode(elements.pptModeInput.value);
+  if (elements.pptFanSourcePicker) {
+    elements.pptFanSourcePicker.hidden = !showFanSource;
+    elements.pptFanSourcePicker.style.display = showFanSource ? "" : "none";
+  }
+  if (elements.pptFanSourceInfo) {
+    elements.pptFanSourceInfo.hidden = !showFanSource;
+    elements.pptFanSourceInfo.style.display = showFanSource ? "" : "none";
+  }
+  if (!showFanSource) {
+    currentPptFanSource = null;
+    // 让此刻仍在进行中的 ZIP/文件夹异步读取失效，避免它稍后 resolve 时把刚清空的
+    // currentPptFanSource 又悄悄写回去（handlePptFanZipFile/handlePptFanFolderFiles
+    // 的过期检查依赖这个 token 递增）。
+    pptFanSourceReadToken += 1;
+    if (elements.pptFanZipInput) elements.pptFanZipInput.value = "";
+    if (elements.pptFanFolderInput) elements.pptFanFolderInput.value = "";
+  }
   // With a custom template the title box is preserved from the template itself,
   // so the editable title field only applies to built-in templates.
   const showTitleField = isReleaseInfoMode && !isCustomTemplate;
@@ -552,7 +604,7 @@ async function handlePptTemplateFile(file) {
   currentPptTemplate = null;
   elements.pptModeInput.disabled = false;
   if (!file) {
-    elements.pptTemplateInfo.textContent = "上传 .pptx 模板后，插件会自动评估它与三种内置模式的匹配关系；发布信息类模板会保留顶部大标题和右侧截图占位图的位置。";
+    elements.pptTemplateInfo.textContent = "上传 .pptx 模板后，插件会自动评估它与三种内置模式的匹配关系；发布信息类模板会保留顶部大标题和 logo，中间发布信息由插件按内置布局生成。";
     return;
   }
   try {
@@ -669,6 +721,147 @@ async function handlePptFolderFiles(files) {
   }
 }
 
+async function handlePptFanZipChange(event) {
+  const file = event.target.files && event.target.files[0];
+  await handlePptFanZipFile(file);
+}
+
+async function handlePptFanZipFile(file) {
+  if (isGeneratingPpt) return;
+  const readToken = ++pptFanSourceReadToken;
+  currentPptFanSource = null;
+  if (!file) {
+    syncPptFanSourceInfo();
+    return;
+  }
+  try {
+    if (!/\.zip$/i.test(file.name)) throw new Error("请选择 .zip 压缩包");
+    elements.pptFanSourceInfo.textContent = `正在读取粉丝量截图：${file.name}`;
+    addLog(`开始读取粉丝量截图压缩包：${file.name}`);
+    const analysis = await window.PptxClippings.inspectZipFile(file);
+    if (readToken !== pptFanSourceReadToken) return;
+    if (!analysis.imageCount) throw new Error("压缩包中没有找到 png、jpg、jpeg 或 webp 图片");
+    currentPptFanSource = { type: "zip", name: file.name, file, imageCount: analysis.imageCount };
+    if (elements.pptFanFolderInput) elements.pptFanFolderInput.value = "";
+    syncPptFanSourceInfo();
+    addLog(`粉丝量截图压缩包读取完成：${analysis.imageCount} 张图片`, "success");
+  } catch (error) {
+    if (readToken !== pptFanSourceReadToken) return;
+    currentPptFanSource = null;
+    elements.pptFanSourceInfo.textContent = `读取失败：${error.message}`;
+    addLog(`粉丝量截图压缩包读取失败：${error.message}`, "failed");
+  }
+}
+
+async function handlePptFanFolderChange(event) {
+  await handlePptFanFolderFiles(Array.from(event.target.files || []));
+}
+
+async function handlePptFanFolderFiles(files) {
+  if (isGeneratingPpt) return;
+  const readToken = ++pptFanSourceReadToken;
+  currentPptFanSource = null;
+  if (!files.length) {
+    syncPptFanSourceInfo();
+    return;
+  }
+  const folderName = getPptFolderName(files);
+  try {
+    elements.pptFanSourceInfo.textContent = `正在读取粉丝量截图：${folderName}`;
+    addLog(`开始读取粉丝量截图文件夹：${folderName}`);
+    const analysis = await window.PptxClippings.inspectImageFiles(files);
+    if (readToken !== pptFanSourceReadToken) return;
+    if (!analysis.imageCount) throw new Error("文件夹中没有找到 png、jpg、jpeg 或 webp 图片");
+    currentPptFanSource = { type: "folder", name: folderName, files, imageCount: analysis.imageCount };
+    if (elements.pptFanZipInput) elements.pptFanZipInput.value = "";
+    syncPptFanSourceInfo();
+    addLog(`粉丝量截图文件夹读取完成：${analysis.imageCount} 张图片`, "success");
+  } catch (error) {
+    if (readToken !== pptFanSourceReadToken) return;
+    currentPptFanSource = null;
+    elements.pptFanSourceInfo.textContent = `读取失败：${error.message}`;
+    addLog(`粉丝量截图文件夹读取失败：${error.message}`, "failed");
+  }
+}
+
+function syncPptFanSourceInfo() {
+  if (!elements.pptFanSourceInfo || !isReleaseInfoLikeMode(elements.pptModeInput.value)) return;
+  if (currentPptFanSource) {
+    elements.pptFanSourceInfo.textContent = `${currentPptFanSource.name}，识别到 ${currentPptFanSource.imageCount} 张粉丝量截图，将按 Excel 序号+昵称精确匹配`;
+    return;
+  }
+  if (currentExcelFanImages.length) {
+    elements.pptFanSourceInfo.textContent = `未手动上传，已从 Excel 内嵌图片自动识别到 ${currentExcelFanImages.length} 张粉丝量截图，将按 Excel 序号+昵称精确匹配（手动上传可覆盖）`;
+    return;
+  }
+  elements.pptFanSourceInfo.textContent = "粉丝量截图按 Excel 序号+昵称命名（如 1_车源凯.png）；勾选自动 PPT 时需在开始截图前选好。若 Excel 表格里已内嵌粉丝量截图（列名含“粉丝”），无需上传即可自动识别。";
+}
+
+// 从某个已解析 Excel 文件的 cellImages（parseXlsx 提取出的 {row, col, bytes, ext}）中，
+// 挑出实际内嵌了截图、且表头模糊匹配「粉丝」的那一列，按该行 buildTasks 会生成的
+// 序号+昵称生成与手动上传文件夹同名规则一致的 fanImages 条目（如「1_车源凯.png」），
+// 供 resolveFanImagesForPpt 在用户未手动上传时兜底使用。
+//
+// 这里刻意直接调用 buildTasks（而不是自己重新猜一遍序号规则）：当 Excel 没有显式的
+// 序号/编号列时，任务的 importSequence 是由 buildTasks 内部按「有效任务行」顺序自动编号的，
+// 只有 buildTasks 自己的计算结果才是权威值——重新实现一遍容易在这类无序号列的表格上和
+// 真正的任务对不上号，导致粉丝量截图永远匹配不到任何一页。
+async function extractFanImagesFromCellImages(rows, cellImages, fileName = "") {
+  if (!Array.isArray(cellImages) || !cellImages.length || !Array.isArray(rows)) return [];
+  const headerRowIndex = findLikelyHeaderRowIndex(rows);
+  const headerRow = rows[headerRowIndex] || [];
+  const fanColumnIndex = resolveFanColumnIndex(headerRow, cellImages);
+  if (fanColumnIndex < 0) return [];
+  const sequenceMode = elements.sequenceModeInput ? elements.sequenceModeInput.value : "sequence";
+  const { tasks: rowTasks } = buildTasks(rows, null, sequenceMode);
+  const taskByRow = new Map();
+  rowTasks.forEach((task) => {
+    if (!taskByRow.has(task.rowNumber - 1)) taskByRow.set(task.rowNumber - 1, task);
+  });
+  const usedNames = new Set();
+  const images = [];
+  for (const cellImage of cellImages) {
+    if (cellImage.col !== fanColumnIndex || cellImage.row <= headerRowIndex) continue;
+    const task = taskByRow.get(cellImage.row);
+    if (!task || !task.nickname) continue; // 该行没有生成有效任务（如链接缺失），无法与任务精确匹配。
+    const baseName = `${task.importSequence}_${task.nickname}`;
+    let name = `${baseName}.${cellImage.ext}`;
+    let counter = 2;
+    while (usedNames.has(name)) {
+      // 去重后缀必须加在序号段而非昵称段：pptx-builder.js 的 parseAuxImageKey 按第一个下划线
+      // 切分「序号_昵称」，若把 _2 加在昵称后面会被解析成「昵称_2」，导致这张图再也匹配不到任何任务。
+      // 加在序号段虽然（对真正序号+昵称完全重复的行）也无法保证匹配到正确的那一页——
+      // 这种情况本身就是 (序号,昵称) 匹配方案的固有局限——但至少不会破坏昵称、便于人工排查。
+      name = `${task.importSequence}-${counter}_${task.nickname}.${cellImage.ext}`;
+      counter += 1;
+    }
+    usedNames.add(name);
+    try {
+      images.push(await window.PptxClippings.normalizeImage(name, cellImage.bytes));
+    } catch (error) {
+      addLog(`解析「${fileName}」内嵌粉丝量截图失败（${task.nickname}）：${error.message}`, "warning");
+    }
+  }
+  return images;
+}
+
+// 表头模糊匹配「粉丝」的列可能不止一个（如同时有人工填写的「粉丝数」和 WPS 内嵌截图的
+// 「粉丝量截图」两列），此时优先选真正承载内嵌图片的那一列，而不是简单取第一个文本匹配列。
+function resolveFanColumnIndex(headerRow, cellImages) {
+  const candidateCols = [];
+  for (let col = 0; col < getMaxColumnCount([headerRow]); col += 1) {
+    if (normalizeHeader(headerRow[col]).includes("粉丝")) candidateCols.push(col);
+  }
+  if (!candidateCols.length) return -1;
+  if (candidateCols.length === 1) return candidateCols[0];
+  const imageColCounts = new Map();
+  cellImages.forEach((image) => {
+    if (candidateCols.includes(image.col)) imageColCounts.set(image.col, (imageColCounts.get(image.col) || 0) + 1);
+  });
+  if (!imageColCounts.size) return candidateCols[0];
+  return Array.from(imageColCounts.entries()).sort((a, b) => b[1] - a[1])[0][0];
+}
+
 async function generatePpt() {
   const source = currentPptSource;
   if (!source || isGeneratingPpt) return;
@@ -678,6 +871,8 @@ async function generatePpt() {
     elements.generatePptButton.disabled = true;
     elements.pptZipInput.disabled = true;
     elements.pptFolderInput.disabled = true;
+    if (elements.pptFanZipInput) elements.pptFanZipInput.disabled = true;
+    if (elements.pptFanFolderInput) elements.pptFanFolderInput.disabled = true;
     elements.pptModeInput.disabled = true;
     if (elements.pptReleaseTitleInput) elements.pptReleaseTitleInput.disabled = true;
     elements.generatePptButton.textContent = "正在生成...";
@@ -697,6 +892,8 @@ async function generatePpt() {
     const running = currentState && (currentState.status === "running" || currentState.status === "paused" || currentState.status === "stopping" || currentState.status === "finalizing");
     elements.pptZipInput.disabled = Boolean(running);
     elements.pptFolderInput.disabled = Boolean(running);
+    if (elements.pptFanZipInput) elements.pptFanZipInput.disabled = Boolean(running);
+    if (elements.pptFanFolderInput) elements.pptFanFolderInput.disabled = Boolean(running);
     elements.pptModeInput.disabled = Boolean(running) || isPptModeLockedByTemplate();
     if (elements.pptTemplateSourceInput) elements.pptTemplateSourceInput.disabled = Boolean(running);
     if (elements.pptTemplateInput) elements.pptTemplateInput.disabled = Boolean(running);
@@ -738,6 +935,8 @@ function isReleaseInfoLikeMode(modeValue) {
 async function buildPptByMode(source, modeValue, options = {}) {
   const matchingTasks = options.tasks || (allParsedTasks.length ? allParsedTasks : parsedTasks);
   const templateBytes = options.templateBytes || (currentPptTemplate && currentPptTemplate.bytes) || undefined;
+  const fanImages = await resolveFanImagesForPpt(options);
+  const pptOptions = { templateBytes, fanImages };
   if (modeValue === "link-screenshot") {
     return source.type === "zip"
       ? window.PptxClippings.buildLinkScreenshotFromZipFile(source.file, matchingTasks, { templateBytes })
@@ -746,36 +945,114 @@ async function buildPptByMode(source, modeValue, options = {}) {
   if (modeValue === "release-info-screenshot") {
     const title = options.title != null ? options.title : elements.pptReleaseTitleInput ? elements.pptReleaseTitleInput.value : "";
     return source.type === "zip"
-      ? window.PptxClippings.buildReleaseInfoScreenshotFromZipFile(source.file, matchingTasks, { title, templateBytes })
-      : window.PptxClippings.buildReleaseInfoScreenshotFromImageFiles(source.files, source.name, matchingTasks, { title, templateBytes });
+      ? window.PptxClippings.buildReleaseInfoScreenshotFromZipFile(source.file, matchingTasks, { title, ...pptOptions })
+      : window.PptxClippings.buildReleaseInfoScreenshotFromImageFiles(source.files, source.name, matchingTasks, { title, ...pptOptions });
   }
   if (modeValue === "dawanqu") {
     const title = options.title != null ? options.title : elements.pptReleaseTitleInput ? elements.pptReleaseTitleInput.value : "";
     return source.type === "zip"
-      ? window.PptxClippings.buildDawanquFromZipFile(source.file, matchingTasks, { title, templateBytes })
-      : window.PptxClippings.buildDawanquFromImageFiles(source.files, source.name, matchingTasks, { title, templateBytes });
+      ? window.PptxClippings.buildDawanquFromZipFile(source.file, matchingTasks, { title, ...pptOptions })
+      : window.PptxClippings.buildDawanquFromImageFiles(source.files, source.name, matchingTasks, { title, ...pptOptions });
   }
   return source.type === "zip"
     ? window.PptxClippings.buildFromZipFile(source.file, { templateBytes })
     : window.PptxClippings.buildFromImageFiles(source.files, source.name, { templateBytes });
 }
 
+async function resolveFanImagesForPpt(options = {}) {
+  if (Array.isArray(options.fanImages)) return options.fanImages;
+  if (options.autoPptFanSourceId && window.FanSourceCache) {
+    try {
+      const record = await window.FanSourceCache.getFanSource(options.autoPptFanSourceId);
+      if (record) return await window.PptxClippings.loadFanImagesFromCacheRecord(record);
+    } catch (error) {
+      addLog(`读取粉丝量截图缓存失败，尝试改用当前弹窗内仍保留的来源：${error.message}`, "warning");
+    }
+    // 缓存读取失败/记录缺失（如 IndexedDB 异常）时，若弹窗仍开着、本次生成用的来源其实还在
+    // 内存里，就不要直接放弃——继续往下走手动来源/Excel 内嵌截图的兜底逻辑。
+  }
+  if (!isReleaseInfoLikeMode(options.modeValue || elements.pptModeInput.value)) return [];
+  const fanSource = options.fanSource || currentPptFanSource;
+  if (fanSource) {
+    try {
+      return await window.PptxClippings.loadImagesFromPptSource(fanSource);
+    } catch (error) {
+      addLog(`读取粉丝量截图来源失败：${error.message}`, "warning");
+      return [];
+    }
+  }
+  // 用户未手动上传粉丝量截图来源时，兜底使用从 Excel 内嵌图片自动识别到的截图。
+  return currentExcelFanImages;
+}
+
+async function persistFanSourceForAutoPpt() {
+  if (!window.FanSourceCache) return "";
+  await window.FanSourceCache.cleanupOldFanSources();
+  const files = [];
+  if (currentPptFanSource && currentPptFanSource.type === "zip") {
+    const images = await window.PptxClippings.loadImagesFromPptSource(currentPptFanSource);
+    images.forEach((image) => {
+      files.push({
+        fileName: getBaseFileName(image.name),
+        blob: new Blob([image.data], { type: image.mime || "image/png" }),
+      });
+    });
+  } else if (currentPptFanSource) {
+    // 过滤掉非图片文件（如 macOS Finder 打开过文件夹后留下的 .DS_Store）：
+    // loadFanImagesFromCacheRecord 后续会对缓存里每个文件调用 normalizeImage 且没有单文件容错，
+    // 混入一个无法解码的文件会导致该次读取把全部粉丝量截图一起丢弃。
+    for (const file of currentPptFanSource.files || []) {
+      const relativePath = file.webkitRelativePath || file.name;
+      if (!window.PptxClippings.isImageZipEntry(relativePath)) continue;
+      files.push({
+        fileName: relativePath,
+        blob: file,
+      });
+    }
+  } else {
+    // 未手动上传时，把从 Excel 内嵌图片自动识别到的截图缓存下来，
+    // 使截图完成后的自动 PPT（含弹窗已关闭走 auto-ppt.html 的情形）也能按 autoPptFanSourceId 取到。
+    currentExcelFanImages.forEach((image) => {
+      files.push({
+        fileName: getBaseFileName(image.name),
+        blob: new Blob([image.data], { type: image.mime || "image/png" }),
+      });
+    });
+  }
+  if (!files.length) return "";
+  return window.FanSourceCache.putFanSource({
+    name: currentPptFanSource ? currentPptFanSource.name : "Excel 内嵌粉丝量截图",
+    files,
+  });
+}
+
+function shouldPersistFanSourceForAutoPpt(options) {
+  return Boolean(
+    options.autoGeneratePpt
+    && isReleaseInfoLikeMode(options.autoPptMode || elements.pptModeInput.value)
+    && (currentPptFanSource || currentExcelFanImages.length)
+  );
+}
+
 function buildPptSourceInfo(name, imageCount) {
   const mode = getCurrentPptMode();
   const matchingTaskCount = allParsedTasks.length || parsedTasks.length;
   const taskText = (mode.value === "link-screenshot" || isReleaseInfoLikeMode(mode.value)) && matchingTaskCount ? `，将优先匹配 ${matchingTaskCount} 条已导入任务` : "";
-  return `${name}，识别到 ${imageCount} 张图片，将生成${mode.label} PPT${taskText}`;
+  const fanCount = currentPptFanSource ? currentPptFanSource.imageCount : currentExcelFanImages.length;
+  const fanText = isReleaseInfoLikeMode(mode.value) && fanCount ? `，粉丝量截图 ${fanCount} 张将按 Excel 序号+昵称匹配` : "";
+  return `${name}，识别到 ${imageCount} 张图片，将生成${mode.label} PPT${taskText}${fanText}`;
 }
 
 function buildPptResultInfo(mode, result) {
+  const fanText = result.fanMatchedCount ? `，其中 ${result.fanMatchedCount} 页含粉丝量截图` : "";
   if (mode.value === "link-screenshot") {
     return `已生成：${result.imageCount} 张图片，${result.slideCount} 页链接截图单图单页`;
   }
   if (mode.value === "release-info-screenshot") {
-    return `已生成：${result.imageCount} 张图片，${result.slideCount} 页发布信息截图单图单页`;
+    return `已生成：${result.imageCount} 张图片，${result.slideCount} 页发布信息截图单图单页${fanText}`;
   }
   if (mode.value === "dawanqu") {
-    return `已生成：${result.imageCount} 张图片，${result.slideCount} 页大湾区崭新模版`;
+    return `已生成：${result.imageCount} 张图片，${result.slideCount} 页大湾区崭新模版${fanText}`;
   }
   return `已生成：${result.imageCount} 张图片，${result.slideCount} 页发布剪报，每页 ${result.imagesPerSlide} 张，布局 ${result.grid}`;
 }
@@ -1986,7 +2263,54 @@ async function parseXlsx(arrayBuffer) {
   const sharedStrings = parseSharedStrings(sharedStringsXml);
   const hyperlinkTargets = parseRelationshipTargets(sheetRelsXml);
   const markedStyleIndexes = parseStyleFillMarks(stylesXml);
-  return parseSheetRows(sheetXml, sharedStrings, hyperlinkTargets, markedStyleIndexes);
+  let cellImageRefs = null;
+  try {
+    cellImageRefs = await resolveCellImageRefs(entries);
+  } catch (error) {
+    // 内嵌粉丝量截图是锦上添花的能力，cellimages.xml/rels 本身损坏不应影响任务表其余数据的正常导入。
+  }
+  const result = parseSheetRows(sheetXml, sharedStrings, hyperlinkTargets, markedStyleIndexes, cellImageRefs);
+  const cellImageTargets = result.cellImageTargets || [];
+  delete result.cellImageTargets;
+  result.cellImages = await loadCellImages(entries, cellImageTargets);
+  return result;
+}
+
+// 解析 WPS/金山表格「插入单元格图片」内嵌截图的 ID -> 媒体文件映射：xl/cellimages.xml（WPS 扩展部件）
+// 里的 <etc:cellImage> 块给出 name(ID_xxx) -> r:embed(rId) 映射，xl/_rels/cellimages.xml.rels 给出
+// rId -> media 路径映射（复用 parseRelationshipTargets，与属性顺序无关）。微软原生 Excel「在单元格中
+// 插入图片」用的是另一套 richValue/richValueRel 结构，本函数不识别，返回 null（不影响其余正常解析）。
+async function resolveCellImageRefs(entries) {
+  if (!entries.has("xl/cellimages.xml") || !entries.has("xl/_rels/cellimages.xml.rels")) return null;
+  const cellImagesXml = await readZipText(entries, "xl/cellimages.xml");
+  const cellImagesRelsXml = await readZipText(entries, "xl/_rels/cellimages.xml.rels");
+  const idToRid = new Map();
+  for (const match of cellImagesXml.matchAll(/<etc:cellImage>([\s\S]*?)<\/etc:cellImage>/g)) {
+    const nameMatch = match[1].match(/<xdr:cNvPr[^>]*\sname="([^"]+)"/);
+    const embedMatch = match[1].match(/r:embed="([^"]+)"/);
+    if (nameMatch && embedMatch) idToRid.set(nameMatch[1], embedMatch[1]);
+  }
+  if (!idToRid.size) return null;
+  const ridToTarget = parseRelationshipTargets(cellImagesRelsXml);
+  if (!ridToTarget.size) return null;
+  return { idToRid, ridToTarget };
+}
+
+// 按 parseSheetRows 收集到的 {row, col, mediaPath} 逐个读取图片字节。单张图片读取失败
+// （压缩方式异常、关联的 media 文件缺失/损坏等）只静默跳过该图，不影响其余图片和整份 Excel 的解析。
+async function loadCellImages(entries, targets) {
+  const images = [];
+  for (const target of targets) {
+    if (!entries.has(target.mediaPath)) continue;
+    try {
+      const bytes = await readZipBinary(entries, target.mediaPath);
+      const ext = (target.mediaPath.split(".").pop() || "png").toLowerCase();
+      images.push({ row: target.row, col: target.col, bytes, ext: ext === "jpg" ? "jpeg" : ext });
+    } catch (error) {
+      // 静默跳过单张损坏/格式异常的内嵌截图。
+    }
+  }
+  return images;
 }
 
 // 解析 xl/styles.xml，返回「带真实背景填充」的单元格样式索引集合（对应 <c s="..">、<row s="..">）。
@@ -2055,6 +2379,11 @@ function parseZipEntries(arrayBuffer) {
 }
 
 async function readZipText(entries, name) {
+  const data = await readZipBinary(entries, name);
+  return new TextDecoder("utf-8").decode(data);
+}
+
+async function readZipBinary(entries, name) {
   const entry = entries.get(name);
   if (!entry) throw new Error(`xlsx 缺少文件：${name}`);
   const view = new DataView(entry.arrayBuffer);
@@ -2076,7 +2405,7 @@ async function readZipText(entries, name) {
   if (entry.uncompressedSize && data.length !== entry.uncompressedSize) {
     data = data.slice(0, entry.uncompressedSize);
   }
-  return new TextDecoder("utf-8").decode(data);
+  return data;
 }
 
 async function inflateRaw(bytes) {
@@ -2117,12 +2446,15 @@ function parseSharedStrings(xml) {
   return Array.from(doc.querySelectorAll("si")).map((si) => Array.from(si.querySelectorAll("t")).map((t) => t.textContent || "").join(""));
 }
 
-function parseSheetRows(xml, sharedStrings, hyperlinkTargets, markedStyleIndexes = null) {
+function parseSheetRows(xml, sharedStrings, hyperlinkTargets, markedStyleIndexes = null, cellImageRefs = null) {
   const doc = new DOMParser().parseFromString(xml, "application/xml");
   const hyperlinks = parseSheetHyperlinks(doc, hyperlinkTargets);
   const detectFill = Boolean(markedStyleIndexes && markedStyleIndexes.size);
   const rows = [];
   const fillMarks = [];
+  // 与 rows/fillMarks 用同一套行号计算（含缺失 r 属性时的 rows.length 兜底），
+  // 保证「内嵌粉丝量截图所在行」与「该行任务数据」引用的是同一行，不会因为各自独立计算行号而错位。
+  const cellImageTargets = [];
   Array.from(doc.querySelectorAll("sheetData row")).forEach((row) => {
     const rowRef = Number.parseInt(row.getAttribute("r"), 10);
     const rowIndex = Number.isFinite(rowRef) && rowRef > 0 ? rowRef - 1 : rows.length;
@@ -2135,6 +2467,13 @@ function parseSheetRows(xml, sharedStrings, hyperlinkTargets, markedStyleIndexes
       values[colIndex] = appendHyperlinkTarget(readCellValue(cell, sharedStrings), hyperlinks.get(ref));
       // 单元格级填充：任一单元格命中标记样式即视为该行有背景标记。
       if (detectFill && !marked && markedStyleIndexes.has(Number.parseInt(cell.getAttribute("s"), 10))) marked = true;
+      if (cellImageRefs) {
+        const formula = cell.querySelector("f");
+        const idMatch = formula && (formula.textContent || "").match(/DISPIMG\("([^"]+)"/);
+        const rid = idMatch && cellImageRefs.idToRid.get(idMatch[1]);
+        const target = rid && cellImageRefs.ridToTarget.get(rid);
+        if (target) cellImageTargets.push({ row: rowIndex, col: colIndex, mediaPath: `xl/${target.replace(/^\.\.\//, "")}` });
+      }
     });
     rows[rowIndex] = values.map((value) => value == null ? "" : value);
     fillMarks[rowIndex] = marked;
@@ -2148,6 +2487,7 @@ function parseSheetRows(xml, sharedStrings, hyperlinkTargets, markedStyleIndexes
   return {
     rows: Array.from({ length: rows.length }, (_, index) => rows[index] || []),
     fillMarks: Array.from({ length: rows.length }, (_, index) => Boolean(fillMarks[index])),
+    cellImageTargets: cellImageTargets.filter((target) => target.row < rows.length),
   };
 }
 
@@ -2167,6 +2507,8 @@ function appendHyperlinkTarget(value, target) {
   if (!target) return value;
   const text = String(value || "").trim();
   if (!text || text === target || text.includes(target)) return target;
+  // 单元格文本已是支持平台链接时，优先信任文本，避免 Excel 复用 rId 导致错误 target 被拼接进来。
+  if (extractVideoUrls(text).some((url) => getUrlPlatform(url))) return text;
   return `${text} ${target}`;
 }
 
@@ -2209,11 +2551,15 @@ function buildTasks(rows, limit, sequenceMode = "sequence") {
       const displaySequence = resolveSequenceForPlatform(sequence, sequenceState);
       const sequenceForFile = continuousSequenceMode || urlItems.length === 1 ? displaySequence : `${displaySequence}-${urlIndex + 1}`;
       const fileName = buildUniqueFileName(`${sequenceForFile}_${nickname}`, usedNames);
+      const importSequence = analysis.sequenceIndex >= 0
+        ? normalizeTaskText(row[analysis.sequenceIndex])
+        : sequenceForFile;
       tasks.push({
         id: `${rowIndex + 1}-${urlIndex + 1}-${Date.now()}-${tasks.length}`,
         listIndex: tasks.length,
         rowNumber: rowIndex + 1,
         sequence: sequenceForFile,
+        importSequence,
         nickname,
         url: item.url,
         platform: item.platform,
@@ -2712,7 +3058,8 @@ function getPlatformLabel(platform) {
 
 function sanitizeFilenamePart(value, fallback) {
   let text = value == null ? "" : String(value).trim();
-  text = text.replace(ILLEGAL_FILENAME_CHARS, "").replace(/\s+/g, "_").replace(/^[._ ]+|[._ ]+$/g, "");
+  // Windows 版 Chrome downloads API 禁止 ASCII ~，全角 ～（U+FF5E）视觉一致且跨平台可下载
+  text = text.replace(/~/g, "\uFF5E").replace(ILLEGAL_FILENAME_CHARS, "").replace(/\s+/g, "_").replace(/^[._ ]+|[._ ]+$/g, "");
   return (text || fallback).slice(0, 80);
 }
 
@@ -2830,7 +3177,7 @@ function getBaseFileName(name) {
 }
 
 function normalizeSupplementFileName(name) {
-  return getBaseFileName(name).toLowerCase();
+  return getBaseFileName(name).replace(/~/g, "\uFF5E").toLowerCase();
 }
 
 function deriveSequenceKey(name) {
@@ -2849,6 +3196,8 @@ function bytesToBase64(bytes) {
 
 function formatBytesForSupplement(bytes) {
   const MB = 1024 * 1024;
+  const GB = MB * 1024;
+  if (bytes >= GB) return `${Math.round(bytes / GB)} GB`;
   if (bytes >= MB) return `${Math.round(bytes / MB)} MB`;
   if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${bytes} B`;
@@ -2970,6 +3319,7 @@ async function startRun() {
     autoPptMode: elements.pptModeInput.value,
     autoPptTitle: elements.pptReleaseTitleInput ? elements.pptReleaseTitleInput.value : "",
     autoPptTemplateId: isPptModeLockedByTemplate() && currentPptTemplate ? currentPptTemplate.id || "" : "",
+    autoPptFanSourceId: "",
     enableSupplementRepairZip: getCurrentCaptureMode() === "supplement",
     douyinBatchSize: DOUYIN_BATCH_SIZE,
     douyinWindowMode: elements.douyinWindowModeInput.value,
@@ -2978,6 +3328,24 @@ async function startRun() {
   };
   addLog(`自动 PPT：${options.autoGeneratePpt ? `已开启（${getCurrentPptMode().label}）` : "已关闭"}`);
   saveDouyinProxyRotationSettings();
+  if (shouldPersistFanSourceForAutoPpt(options)) {
+    try {
+      isPreparingSupplementStart = true;
+      updateStartButtonDisabled();
+      addLog("正在缓存粉丝量截图来源，供截图完成后自动 PPT 使用...");
+      options.autoPptFanSourceId = await persistFanSourceForAutoPpt();
+      const fanCount = currentPptFanSource ? currentPptFanSource.imageCount : currentExcelFanImages.length;
+      const fanOrigin = currentPptFanSource ? "" : "（来自 Excel 内嵌图片自动识别）";
+      addLog(`粉丝量截图来源已缓存：${fanCount} 张${fanOrigin}，将在自动 PPT 中按 Excel 序号+昵称匹配`, "success");
+    } catch (error) {
+      // 粉丝量截图只是自动 PPT 的锦上添花项，缓存失败不应该阻断本次与它无关的整批截图任务——
+      // 继续执行，只是自动生成的 PPT 里不会带粉丝量截图（等同于没有提供来源时的效果）。
+      addLog(`粉丝量截图缓存失败，本次截图任务仍会继续，自动生成的 PPT 将不含粉丝量截图：${error.message}`, "warning");
+      options.autoPptFanSourceId = "";
+    }
+    isPreparingSupplementStart = false;
+    updateStartButtonDisabled();
+  }
   if (options.enableSupplementRepairZip) {
     try {
       isPreparingSupplementStart = true;
@@ -3057,6 +3425,8 @@ function applyState(state) {
   if (elements.pptTemplateInput) elements.pptTemplateInput.disabled = running || pptBusy;
   elements.pptZipInput.disabled = running || pptBusy;
   elements.pptFolderInput.disabled = running || pptBusy;
+  if (elements.pptFanZipInput) elements.pptFanZipInput.disabled = running || pptBusy;
+  if (elements.pptFanFolderInput) elements.pptFanFolderInput.disabled = running || pptBusy;
   elements.generatePptButton.disabled = running || pptBusy || !currentPptSource;
   elements.limitInput.disabled = running;
   elements.sequenceModeInput.disabled = running;
@@ -3136,7 +3506,13 @@ async function autoGeneratePptFromCompletedRun(state) {
     const mode = { value: modeValue, ...(PPT_MODES[modeValue] || PPT_MODES.clippings) };
     const tasks = screenshots.map((item) => item.task).filter(Boolean);
     const templateBytes = await loadAutoPptTemplateBytesFromState(state);
-    const result = await buildPptByMode(source, mode.value, { tasks, title: state.options.autoPptTitle || "", templateBytes });
+    const result = await buildPptByMode(source, mode.value, {
+      tasks,
+      title: state.options.autoPptTitle || "",
+      templateBytes,
+      autoPptFanSourceId: state.options.autoPptFanSourceId || "",
+      modeValue: mode.value,
+    });
     await window.PptxClippings.downloadResult(result);
     elements.pptZipInfo.textContent = buildPptResultInfo(mode, result);
     await sendMessage({ type: "MARK_AUTO_PPT_GENERATED", result: { fileName: result.fileName, imageCount: result.imageCount, slideCount: result.slideCount, mode: mode.value } });

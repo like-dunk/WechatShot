@@ -227,11 +227,22 @@ function loadPptxExportsWithInternals() {
   context.chrome = { runtime: { getURL: (name) => `chrome-extension://test/${name}` } };
   const source = readSource("pptx-builder.js").replace(
     "  window.PptxClippings = {",
-    "  window.__loadTemplateFiles = loadTemplateFiles;\n  window.PptxClippings = {"
+    [
+      "  window.__loadTemplateFiles = loadTemplateFiles;",
+      "  window.__buildReleaseInfoScreenshotItems = buildReleaseInfoScreenshotItems;",
+      "  window.__buildAuxImageMap = buildAuxImageMap;",
+      "  window.__resolveAuxImageForTask = resolveAuxImageForTask;",
+      "  window.__resolveAuxImageFromImageName = resolveAuxImageFromImageName;",
+      "  window.PptxClippings = {",
+    ].join("\n")
   );
   vm.runInContext(source, context, { filename: "pptx-builder.js" });
   return {
     __loadTemplateFiles: context.__loadTemplateFiles,
+    __buildReleaseInfoScreenshotItems: context.__buildReleaseInfoScreenshotItems,
+    __buildAuxImageMap: context.__buildAuxImageMap,
+    __resolveAuxImageForTask: context.__resolveAuxImageForTask,
+    __resolveAuxImageFromImageName: context.__resolveAuxImageFromImageName,
     __setFetch: (impl) => { fetchImpl = impl; },
   };
 }
@@ -797,6 +808,26 @@ function testPptMatching() {
   assert.strictEqual(items[2].sequence, "3");
 }
 
+function testAuxImageMatching() {
+  const pptx = loadPptxExportsWithInternals();
+  const tasks = [
+    { importSequence: 1, sequence: "1", nickname: "抖音账号", fileName: "1_抖音账号.png" },
+    { importSequence: 2, sequence: "9", nickname: "视频号账号", fileName: "2_视频号账号.png" },
+  ];
+  const auxImages = [{ name: "1_抖音账号.png" }, { name: "9_视频号账号.png" }];
+  const map = pptx.__buildAuxImageMap(auxImages, tasks);
+  // 精确匹配：文件名本身的序号_昵称能直接命中。
+  assert.strictEqual(pptx.__resolveAuxImageForTask(tasks[0], map), auxImages[0]);
+  // Excel 序号列（9）与插件权威 importSequence（2）不一致时，仍应按任务反查兜底命中。
+  assert.strictEqual(pptx.__resolveAuxImageForTask(tasks[1], map), auxImages[1]);
+  // 无匹配任务时返回 null，不应抛异常。
+  const strangerTask = { importSequence: 3, nickname: "陌生账号" };
+  assert.strictEqual(pptx.__resolveAuxImageForTask(strangerTask, map), null);
+  // 按截图文件名兜底匹配（item.task 为空但截图文件名本身符合 序号_昵称）。
+  assert.strictEqual(pptx.__resolveAuxImageFromImageName({ name: "1_抖音账号.png" }, map), auxImages[0]);
+  assert.strictEqual(pptx.__resolveAuxImageFromImageName({ name: "未知.png" }, map), null);
+}
+
 function testOutputFolderNaming() {
   const background = loadBackgroundExports();
   const pptx = loadPptxExports();
@@ -1007,6 +1038,7 @@ const tests = [
   testBackgroundOptionsAndQueue,
   testPlatformNavigationHelpers,
   testPptMatching,
+  testAuxImageMatching,
   testOutputFolderNaming,
   testAutoPptTemplateIdFlowsThroughOptions,
   testTemplateCacheRoundTrip,

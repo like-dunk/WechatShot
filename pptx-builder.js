@@ -18,7 +18,7 @@
   }
   const ZIP32_LIMIT = 0xffffffff;
   const MAX_SOURCE_ZIP_BYTES = 2 * 1024 * 1024 * 1024;
-  const MAX_IMAGE_COUNT = 2000;
+  const MAX_IMAGE_COUNT = 5000;
   const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
   const MAX_OUTPUT_BYTES = Math.round(2.6 * 1024 * 1024 * 1024);
   const MAX_IMAGES_PER_SLIDE = 15;
@@ -41,6 +41,7 @@
   // only layout hints in custom templates and are removed before inserting the
   // real screenshot.
   const SCREENSHOT_HINT_PATTERN = /截图参考|截图位置|截图示例|此处放截图|放置截图|截图占位|示意图|参考图/;
+  const RELEASE_INFO_LABEL_PATTERN = /发布账号|发布平台|发布标题|发布链接|发布时间/;
   const PML = "http://schemas.openxmlformats.org/presentationml/2006/main";
   const DML = "http://schemas.openxmlformats.org/drawingml/2006/main";
   const REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -249,8 +250,9 @@
 
   async function buildReleaseInfoScreenshotFromImages(images, sourceName, tasks = [], options = {}) {
     const files = await loadTemplateFiles(RELEASE_INFO_SCREENSHOT_TEMPLATE_FILE, options.templateBytes, "无法读取发布信息截图单图单页模板");
+    const preserveTemplateLayout = Boolean(options.templateBytes);
     const items = buildReleaseInfoScreenshotItems(images, tasks, options);
-    const bytes = buildReleaseInfoScreenshotPptx(files, items, { preserveTemplateLayout: Boolean(options.templateBytes) });
+    const bytes = buildReleaseInfoScreenshotPptx(files, items, { preserveTemplateLayout });
     if (bytes.length > MAX_OUTPUT_BYTES) throw new Error(`生成后的 PPT 超过 ${formatBytes(MAX_OUTPUT_BYTES)}，请减少图片数量或先压缩图片`);
     return {
       bytes,
@@ -259,15 +261,13 @@
       slideCount: items.length,
       imagesPerSlide: 1,
       grid: "1×1",
+      fanMatchedCount: items.filter((item) => item.fanImage).length,
     };
   }
 
   async function buildDawanquFromImages(images, sourceName, tasks = [], options = {}) {
     const files = await loadTemplateFiles(DAWANQU_TEMPLATE_FILE, options.templateBytes, "无法读取大湾区崭新模版");
     const items = buildReleaseInfoScreenshotItems(images, tasks, options);
-    // The 大湾区崭新模版 keeps its own branded title and screenshot placeholder,
-    // so always preserve the template layout and only swap the screenshot and
-    // fill the 发布账号/平台/标题/链接/时间 info fields in place.
     const bytes = buildReleaseInfoScreenshotPptx(files, items, { preserveTemplateLayout: true });
     if (bytes.length > MAX_OUTPUT_BYTES) throw new Error(`生成后的 PPT 超过 ${formatBytes(MAX_OUTPUT_BYTES)}，请减少图片数量或先压缩图片`);
     return {
@@ -277,6 +277,7 @@
       slideCount: items.length,
       imagesPerSlide: 1,
       grid: "1×1",
+      fanMatchedCount: items.filter((item) => item.fanImage).length,
     };
   }
 
@@ -579,13 +580,15 @@
       if (key && !taskNameMap.has(key)) taskNameMap.set(key, index);
     });
     return images.map((image, index) => {
-      const taskIndex = findTaskIndexForImage(image, index, availableTasks, usedTaskIndexes, taskNameMap);
+      const match = findTaskIndexForImage(image, index, availableTasks, usedTaskIndexes, taskNameMap);
+      const taskIndex = match.index;
       const task = taskIndex >= 0 ? availableTasks[taskIndex] : null;
       if (taskIndex >= 0) usedTaskIndexes.add(taskIndex);
       const fallbackName = getBaseFileName(image.name);
       return {
         image,
         task,
+        exactTaskMatch: Boolean(match.exact && task),
         sequence: normalizeLinkScreenshotText(task && task.sequence) || deriveSequenceFromImageName(image.name) || String(index + 1),
         linkText: normalizeLinkScreenshotText(task && task.url) || fallbackName,
         nickname: normalizeLinkScreenshotText(task && task.nickname) || fallbackName,
@@ -595,11 +598,17 @@
 
   function buildReleaseInfoScreenshotItems(images, tasks, options = {}) {
     const title = normalizeLinkScreenshotText(options.title) || RELEASE_INFO_DEFAULT_TITLE;
-    return buildLinkScreenshotItems(images, tasks).map((item) => {
+    const availableTasks = Array.isArray(tasks) ? tasks : [];
+    const fanMap = buildAuxImageMap(options.fanImages || [], availableTasks);
+    return buildLinkScreenshotItems(images, availableTasks).map((item) => {
       const task = item.task || {};
       const releaseInfo = task.releaseInfo || {};
+      const fanImage = item.task
+        ? resolveAuxImageForTask(item.task, fanMap) || resolveAuxImageFromImageName(item.image, fanMap)
+        : null;
       return {
         image: item.image,
+        fanImage,
         title,
         account: normalizeLinkScreenshotText(releaseInfo.account) || normalizeLinkScreenshotText(task.nickname) || item.nickname,
         platform: normalizeLinkScreenshotText(releaseInfo.platform) || normalizeLinkScreenshotText(task.platformLabel),
@@ -610,12 +619,113 @@
     });
   }
 
+  function normalizeAuxSequence(sequence) {
+    const text = String(sequence == null ? "" : sequence).trim();
+    if (/^\d+(\.0+)?$/.test(text)) return String(parseInt(text, 10));
+    return text;
+  }
+
+  function getTaskAuxSequence(task) {
+    if (task && task.importSequence != null && String(task.importSequence).trim() !== "") {
+      return task.importSequence;
+    }
+    return task && task.sequence;
+  }
+
+  function findTaskForAuxParsed(parsed, tasks) {
+    if (!parsed || !Array.isArray(tasks) || !tasks.length) return null;
+    const targetSeq = normalizeAuxSequence(parsed.sequence);
+    const targetNick = sanitizeFilenamePart(parsed.nickname, "").toLowerCase();
+    return tasks.find((task) => {
+      if (!task) return false;
+      const nick = sanitizeFilenamePart(task.nickname, "").toLowerCase();
+      if (nick !== targetNick) return false;
+      const fileSeq = parseAuxImageKey(getBaseFileName(task.fileName));
+      const candidates = [task.importSequence, task.sequence, fileSeq && fileSeq.sequence];
+      return candidates.some((seq) => seq != null && String(seq).trim() !== "" && normalizeAuxSequence(seq) === targetSeq);
+    }) || null;
+  }
+
+  function sanitizeFilenamePart(value) {
+    let text = value == null ? "" : String(value).trim();
+    // Windows 版 Chrome downloads API 禁止 ASCII ~，全角 ～（U+FF5E）视觉一致且跨平台可下载
+    text = text.replace(/~/g, "\uFF5E").replace(/[\\/:*?"<>|\r\n\t]+/g, "").replace(/\s+/g, "_").replace(/^[._ ]+|[._ ]+$/g, "");
+    return text.slice(0, 80);
+  }
+
+  function normalizeAuxMatchKey(sequence, nickname) {
+    const seq = normalizeAuxSequence(sequence);
+    const nick = sanitizeFilenamePart(nickname, "").toLowerCase();
+    return `${seq}_${nick}`;
+  }
+
+  function parseAuxImageKey(name) {
+    const base = getBaseFileName(name);
+    const index = base.indexOf("_");
+    if (index < 0) return null;
+    return {
+      sequence: base.slice(0, index).trim(),
+      nickname: base.slice(index + 1).trim(),
+    };
+  }
+
+  // 通用「序号_昵称」辅助图匹配算法，粉丝量截图与后台播放数据截图共用同一份实现。
+  function buildAuxImageMap(auxImages, tasks = []) {
+    const map = new Map();
+    const availableTasks = Array.isArray(tasks) ? tasks : [];
+    (auxImages || []).forEach((image) => {
+      const parsed = parseAuxImageKey(image && image.name);
+      if (!parsed) return;
+      const fileKey = normalizeAuxMatchKey(parsed.sequence, parsed.nickname);
+      if (fileKey && !map.has(fileKey)) map.set(fileKey, image);
+      // 与 Excel 内嵌路径一致：手动上传的「序号_昵称」若能对应到某条任务，
+      // 再按该任务权威的 importSequence+昵称 注册一份，避免 Excel 序号列与插件连续编号不一致时对不上。
+      const task = findTaskForAuxParsed(parsed, availableTasks);
+      if (task) {
+        const taskKey = normalizeAuxMatchKey(getTaskAuxSequence(task), task.nickname);
+        if (taskKey && !map.has(taskKey)) map.set(taskKey, image);
+      }
+    });
+    return map;
+  }
+
+  function resolveAuxImageFromImageName(image, auxMap) {
+    if (!image || !auxMap || !auxMap.size) return null;
+    const parsed = parseAuxImageKey(image.name);
+    if (!parsed) return null;
+    return auxMap.get(normalizeAuxMatchKey(parsed.sequence, parsed.nickname)) || null;
+  }
+
+  function resolveAuxImageForTask(task, auxMap) {
+    if (!task || !auxMap || !auxMap.size) return null;
+    const key = normalizeAuxMatchKey(getTaskAuxSequence(task), task.nickname);
+    return auxMap.get(key) || null;
+  }
+
+  async function loadImagesFromPptSource(source) {
+    if (!source) return [];
+    if (source.type === "zip") return readImagesFromZipFile(source.file);
+    const { images } = await readImagesFromImageFiles(source.files);
+    return images;
+  }
+
+  async function loadFanImagesFromCacheRecord(record) {
+    if (!record || !Array.isArray(record.files) || !record.files.length) return [];
+    const images = [];
+    for (const file of record.files) {
+      const bytes = new Uint8Array(await file.blob.arrayBuffer());
+      images.push(await normalizeImage(file.fileName, bytes));
+    }
+    return images;
+  }
+
   function findTaskIndexForImage(image, index, tasks, usedTaskIndexes, taskNameMap) {
     const key = normalizeBaseName(image && image.name);
     const exactIndex = taskNameMap.has(key) ? taskNameMap.get(key) : -1;
-    if (exactIndex >= 0 && !usedTaskIndexes.has(exactIndex)) return exactIndex;
-    if (tasks[index] && !usedTaskIndexes.has(index)) return index;
-    return tasks.findIndex((task, taskIndex) => task && !usedTaskIndexes.has(taskIndex));
+    if (exactIndex >= 0 && !usedTaskIndexes.has(exactIndex)) return { index: exactIndex, exact: true };
+    if (tasks[index] && !usedTaskIndexes.has(index)) return { index, exact: false };
+    const fallbackIndex = tasks.findIndex((task, taskIndex) => task && !usedTaskIndexes.has(taskIndex));
+    return { index: fallbackIndex, exact: false };
   }
 
   function buildLinkScreenshotPptx(files, items) {
@@ -695,6 +805,7 @@
       const slideTarget = isFirst ? templateSlide.target : `slides/slide${nextSlideNumber}.xml`;
       const slideFileName = slideTarget.split("/").pop();
       const relsPath = `ppt/slides/_rels/${slideFileName}.rels`;
+      const imageLinks = [];
       const mediaName = `image${nextMediaNumber}.${item.image.ext}`;
       nextMediaNumber += 1;
       const imageLink = {
@@ -703,10 +814,22 @@
         target: `../media/${mediaName}`,
       };
       files.set(`ppt/media/${mediaName}`, item.image.data);
-      const slideRels = buildLinkScreenshotRelationships(baseRelsXml, imageLink);
+      imageLinks.push(imageLink);
+      if (item.fanImage) {
+        const fanMediaName = `image${nextMediaNumber}.${item.fanImage.ext}`;
+        nextMediaNumber += 1;
+        const fanImageLink = {
+          ...item.fanImage,
+          relId: "",
+          target: `../media/${fanMediaName}`,
+        };
+        files.set(`ppt/media/${fanMediaName}`, item.fanImage.data);
+        imageLinks.push(fanImageLink);
+      }
+      const slideRels = buildReleaseInfoSlideRelationships(baseRelsXml, imageLinks);
       const slideXml = preserveTemplateLayout
-        ? buildReleaseInfoTemplateSlideXml(baseSlideXml, imageLink, item)
-        : buildReleaseInfoScreenshotSlideXml(baseSlideXml, imageLink, item);
+        ? buildReleaseInfoTemplateSlideXml(baseSlideXml, imageLinks, item)
+        : buildReleaseInfoScreenshotSlideXml(baseSlideXml, imageLinks, item);
       files.set(`ppt/${slideTarget}`, encodeText(slideXml));
       files.set(relsPath, encodeText(slideRels));
       ensureSlideOverride(contentTypesDoc, `/ppt/${slideTarget}`);
@@ -727,20 +850,26 @@
     return createZip(Array.from(files.entries()).map(([name, data]) => ({ name, data })));
   }
 
-  function buildLinkScreenshotRelationships(baseRelsXml, image) {
+  function buildReleaseInfoSlideRelationships(baseRelsXml, images) {
     const doc = parseXml(baseRelsXml || emptyRelationshipsXml());
     const root = doc.documentElement;
     Array.from(root.getElementsByTagNameNS(PKG_REL, "Relationship")).forEach((rel) => {
       if (shouldRemoveLinkScreenshotRelationship(rel)) rel.parentNode.removeChild(rel);
     });
-    const relId = `rId${getNextRelNumber(doc)}`;
-    image.relId = relId;
-    const rel = doc.createElementNS(PKG_REL, "Relationship");
-    rel.setAttribute("Id", relId);
-    rel.setAttribute("Type", IMAGE_REL_TYPE);
-    rel.setAttribute("Target", image.target);
-    root.appendChild(rel);
+    (images || []).forEach((image) => {
+      const relId = `rId${getNextRelNumber(doc)}`;
+      image.relId = relId;
+      const rel = doc.createElementNS(PKG_REL, "Relationship");
+      rel.setAttribute("Id", relId);
+      rel.setAttribute("Type", IMAGE_REL_TYPE);
+      rel.setAttribute("Target", image.target);
+      root.appendChild(rel);
+    });
     return serializeXml(doc);
+  }
+
+  function buildLinkScreenshotRelationships(baseRelsXml, image) {
+    return buildReleaseInfoSlideRelationships(baseRelsXml, [image]);
   }
 
   function shouldRemoveLinkScreenshotRelationship(rel) {
@@ -792,7 +921,7 @@
     };
   }
 
-  function buildReleaseInfoScreenshotSlideXml(baseSlideXml, image, item) {
+  function buildReleaseInfoScreenshotSlideXml(baseSlideXml, imageLinks, item) {
     const doc = parseXml(baseSlideXml);
     Array.from(doc.getElementsByTagNameNS(PML, "sp")).forEach((shape) => shape.parentNode.removeChild(shape));
     Array.from(doc.getElementsByTagNameNS(PML, "pic")).forEach((picture) => picture.parentNode.removeChild(picture));
@@ -804,8 +933,19 @@
       spTree.appendChild(createTextBoxNode(doc, nextShapeId, `发布信息 ${index + 1}`, row.text, row.position, { fontSize: row.fontSize }));
       nextShapeId += 1;
     });
-    const pic = createPictureNode(doc, nextShapeId, item.account || "发布截图", image.relId, buildReleaseInfoPicturePosition(image));
-    spTree.appendChild(pic);
+    const mainImage = imageLinks[0];
+    const fanImage = imageLinks[1] || null;
+    if (fanImage) {
+      const [leftBox, rightBox] = splitBoxHorizontally(RELEASE_INFO_LAYOUT.image);
+      const mainPosition = fitPictureIntoBox(mainImage, leftBox);
+      const fanPosition = fitPictureIntoBox(fanImage, rightBox);
+      spTree.appendChild(createPictureNode(doc, nextShapeId, item.account || "发布截图", mainImage.relId, mainPosition));
+      nextShapeId += 1;
+      spTree.appendChild(createPictureNode(doc, nextShapeId, "粉丝量截图", fanImage.relId, fanPosition));
+    } else {
+      const pic = createPictureNode(doc, nextShapeId, item.account || "发布截图", mainImage.relId, buildReleaseInfoPicturePosition(mainImage));
+      spTree.appendChild(pic);
+    }
     return serializeXml(doc);
   }
 
@@ -815,50 +955,78 @@
     return Math.min(RELEASE_INFO_TEMPLATE_INDEX, slides.length - 1);
   }
 
-  // Custom-template path: keep the uploaded template's top title box and screenshot
-  // placeholder positions unchanged, only swap the picture image and fill the
-  // 发布账号/平台/标题/链接/时间 info text box in place.
-  function buildReleaseInfoTemplateSlideXml(baseSlideXml, image, item) {
+  // Custom-template path: keep the uploaded template's top title box and non-screenshot
+  // images (e.g. logo). Middle slot labels are removed and rebuilt with the built-in
+  // RELEASE_INFO_LAYOUT rows; screenshot placeholders are swapped for real images.
+  function buildReleaseInfoTemplateSlideXml(baseSlideXml, imageLinks, item) {
     const doc = parseXml(baseSlideXml);
     const shapes = Array.from(doc.getElementsByTagNameNS(PML, "sp"));
-    const infoShape = findReleaseInfoFieldShape(shapes);
-    if (infoShape) fillReleaseInfoFieldShape(infoShape, item);
-    // The top title box (文本框1) is intentionally left untouched so the uploaded
-    // template's title text and position stay unchanged.
-    const placeholder = Array.from(doc.getElementsByTagNameNS(PML, "pic"))[0] || null;
-    const position = placeholder ? getShapeGeometry(placeholder) : buildReleaseInfoPicturePosition(image);
-    const fitted = fitPictureIntoBox(image, position);
+    const titleShape = findReleaseInfoTitleShape(shapes);
+    removeReleaseInfoMiddleShapes(doc, titleShape);
+    const pictures = Array.from(doc.getElementsByTagNameNS(PML, "pic"));
+    const mainPlaceholder = pictures[0] || null;
+    const fanPlaceholder = pictures[1] || null;
+    const mainImage = imageLinks[0];
+    const fanImage = imageLinks[1] || null;
     const spTree = doc.getElementsByTagNameNS(PML, "spTree")[0];
-    // Remove screenshot annotation boxes (e.g. "截图参考") — they are only layout
-    // hints and should not appear over the inserted screenshot.
-    removeScreenshotHintShapes(doc, infoShape);
-    if (placeholder) placeholder.parentNode.removeChild(placeholder);
-    const pic = createPictureNode(doc, getMaxShapeId(doc) + 1, item.account || "发布截图", image.relId, fitted);
-    spTree.appendChild(pic);
+    let nextShapeId = getMaxShapeId(doc) + 1;
+    buildReleaseInfoRows(item).forEach((row, index) => {
+      spTree.appendChild(createTextBoxNode(doc, nextShapeId, `发布信息 ${index + 1}`, row.text, row.position, { fontSize: row.fontSize }));
+      nextShapeId += 1;
+    });
+    // 只移除我们实际要替换的主图/粉丝图占位图形，模板里其余图片（如 logo）保持不动。
+    [mainPlaceholder, fanPlaceholder].forEach((picture) => { if (picture) picture.parentNode.removeChild(picture); });
+    if (mainImage && fanImage && fanPlaceholder) {
+      const mainBox = mainPlaceholder ? getShapeGeometry(mainPlaceholder) : buildReleaseInfoPicturePosition(mainImage);
+      spTree.appendChild(createPictureNode(doc, getMaxShapeId(doc) + 1, item.account || "发布截图", mainImage.relId, fitPictureIntoBox(mainImage, mainBox)));
+      spTree.appendChild(createPictureNode(doc, getMaxShapeId(doc) + 1, "粉丝量截图", fanImage.relId, fitPictureIntoBox(fanImage, getShapeGeometry(fanPlaceholder))));
+    } else if (mainImage) {
+      const box = mainPlaceholder ? getShapeGeometry(mainPlaceholder) : buildReleaseInfoPicturePosition(mainImage);
+      if (fanImage) {
+        const [leftBox, rightBox] = splitBoxHorizontally(box);
+        spTree.appendChild(createPictureNode(doc, getMaxShapeId(doc) + 1, item.account || "发布截图", mainImage.relId, fitPictureIntoBox(mainImage, leftBox)));
+        spTree.appendChild(createPictureNode(doc, getMaxShapeId(doc) + 1, "粉丝量截图", fanImage.relId, fitPictureIntoBox(fanImage, rightBox)));
+      } else {
+        spTree.appendChild(createPictureNode(doc, getMaxShapeId(doc) + 1, item.account || "发布截图", mainImage.relId, fitPictureIntoBox(mainImage, box)));
+      }
+    }
     return serializeXml(doc);
   }
 
-  function removeScreenshotHintShapes(doc, infoShape) {
-    Array.from(doc.getElementsByTagNameNS(PML, "sp")).forEach((shape) => {
-      if (shape === infoShape) return;
-      const text = getTextContent(shape);
-      if (text && SCREENSHOT_HINT_PATTERN.test(text)) shape.parentNode.removeChild(shape);
-    });
-  }
-
-  function findReleaseInfoFieldShape(shapes) {
-    return shapes.find((shape) => /发布账号|发布平台|发布标题|发布时间/.test(getTextContent(shape))) || null;
-  }
-
-  function fillReleaseInfoFieldShape(shape, item) {
-    const lines = [
-      `发布账号：${item.account || ""}`,
-      `发布平台：${item.platform || ""}`,
-      `发布标题：${item.publishTitle || ""}`,
-      `发布链接：${item.link || ""}`,
-      `发布时间：${item.time || ""}`,
+  function splitBoxHorizontally(box) {
+    const halfCx = Math.round(box.cx / 2);
+    return [
+      { x: box.x, y: box.y, cx: halfCx, cy: box.cy },
+      { x: box.x + halfCx, y: box.y, cx: box.cx - halfCx, cy: box.cy },
     ];
-    setShapeParagraphs(shape, lines);
+  }
+
+  function isReleaseInfoLabelText(text) {
+    return RELEASE_INFO_LABEL_PATTERN.test(String(text || ""));
+  }
+
+  function findReleaseInfoTitleShape(shapes) {
+    const candidates = shapes.filter((shape) => {
+      const text = getTextContent(shape);
+      if (!text) return false;
+      if (isReleaseInfoLabelText(text)) return false;
+      if (SCREENSHOT_HINT_PATTERN.test(text)) return false;
+      return true;
+    });
+    if (!candidates.length) return null;
+    return candidates.reduce((top, shape) => (
+      getShapeGeometry(shape).y < getShapeGeometry(top).y ? shape : top
+    ));
+  }
+
+  function removeReleaseInfoMiddleShapes(doc, titleShape) {
+    Array.from(doc.getElementsByTagNameNS(PML, "sp")).forEach((shape) => {
+      if (shape === titleShape) return;
+      const text = getTextContent(shape);
+      if (text && (isReleaseInfoLabelText(text) || SCREENSHOT_HINT_PATTERN.test(text))) {
+        shape.parentNode.removeChild(shape);
+      }
+    });
   }
 
   function fitPictureIntoBox(image, box) {
@@ -1416,6 +1584,10 @@
     buildDawanquFromZipFile,
     buildDawanquFromImageFiles,
     buildLinkScreenshotItems,
+    loadImagesFromPptSource,
+    loadFanImagesFromCacheRecord,
+    normalizeImage,
+    isImageZipEntry,
     downloadResult,
   };
 })();
