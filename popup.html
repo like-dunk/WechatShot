@@ -239,6 +239,20 @@
         </div>
       </div>
       <div id="pptFanSourceInfo" class="muted" hidden>粉丝量截图按 Excel 序号+昵称命名（如 1_车源凯.png）；勾选自动 PPT 时需在开始截图前选好。</div>
+      <div id="pptPlaybackSourcePicker" class="ppt-source-picker" hidden>
+        <div class="ppt-source-title">选择后台播放数据截图来源（可选）</div>
+        <div class="ppt-source-actions">
+          <label class="ppt-source-action">
+            <input id="pptPlaybackZipInput" type="file" accept=".zip,application/zip,application/x-zip-compressed">
+            <span>选择 ZIP</span>
+          </label>
+          <label class="ppt-source-action">
+            <input id="pptPlaybackFolderInput" type="file" webkitdirectory multiple>
+            <span>选择文件夹</span>
+          </label>
+        </div>
+      </div>
+      <div id="pptPlaybackSourceInfo" class="muted" hidden>后台播放数据截图按 Excel 序号+昵称命名（如 1_车源凯.png）；勾选自动 PPT 时需在开始截图前选好。</div>
       <div id="pptZipInfo" class="muted">选择模式后使用内置模板生成 PPT；支持 ZIP 压缩包或截图文件夹，插件内生成建议 ≤5000 张、ZIP ≤2GB。</div>
       <button id="generatePptButton" class="primary wide-button" disabled>生成并下载 PPT</button>
     </section>
@@ -351,6 +365,7 @@
   </main>
   <script src="screenshot-cache.js"></script>
   <script src="fan-source-cache.js"></script>
+  <script src="playback-source-cache.js"></script>
   <script src="pptx-builder.js"></script>
   <script src="popup.js"></script>
 </body>
