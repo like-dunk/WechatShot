@@ -210,6 +210,15 @@ function loadTemplateCacheExports() {
   return { TemplateCache: context.TemplateCache };
 }
 
+function loadPlaybackSourceCacheExports() {
+  const context = vm.createContext(createBaseContext());
+  context.window = context;
+  context.indexedDB = createFakeIndexedDB();
+  context.IDBKeyRange = { upperBound: (value) => ({ value }) };
+  vm.runInContext(readSource("playback-source-cache.js"), context, { filename: "playback-source-cache.js" });
+  return { PlaybackSourceCache: context.PlaybackSourceCache };
+}
+
 function loadPptxExportsWithInternals() {
   const context = vm.createContext(createBaseContext());
   context.window = context;
@@ -836,6 +845,25 @@ async function testTemplateCacheRoundTrip() {
   assert.strictEqual(afterDelete, undefined);
 }
 
+async function testPlaybackSourceCacheRoundTrip() {
+  // 用内存版 IndexedDB 模拟，验证 PlaybackSourceCache 存取闭环：存入文件 -> 按 id 取回一致；
+  // 删除后再取应返回 undefined。
+  const { PlaybackSourceCache } = loadPlaybackSourceCacheExports();
+  const files = [{ fileName: "1_抖音账号.png", blob: { arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer } }];
+  const id = await PlaybackSourceCache.putPlaybackSource({ name: "后台播放数据截图", files });
+  assert.ok(id && typeof id === "string" && id.startsWith("playback-"));
+  const record = await PlaybackSourceCache.getPlaybackSource(id);
+  assert.ok(record, "应能按 id 取回播放数据截图缓存记录");
+  assert.strictEqual(record.name, "后台播放数据截图");
+  assert.strictEqual(record.files.length, 1);
+  assert.strictEqual(record.files[0].fileName, "1_抖音账号.png");
+  const missing = await PlaybackSourceCache.getPlaybackSource("不存在的id");
+  assert.strictEqual(missing, undefined);
+  await PlaybackSourceCache.deletePlaybackSource(id);
+  const afterDelete = await PlaybackSourceCache.getPlaybackSource(id);
+  assert.strictEqual(afterDelete, undefined);
+}
+
 async function testLoadTemplateFilesFallback() {
   // loadTemplateFiles 是模板生效与回退的核心分叉点：
   // 有 templateBytes -> 用自定义模板（解析传入的 zip 字节）；
@@ -982,6 +1010,7 @@ const tests = [
   testOutputFolderNaming,
   testAutoPptTemplateIdFlowsThroughOptions,
   testTemplateCacheRoundTrip,
+  testPlaybackSourceCacheRoundTrip,
   testLoadTemplateFilesFallback,
   testRefloBatchRetriesTransientErrors,
   testRefloBatchSkipsNonRetryableError,
