@@ -1001,6 +1001,29 @@
     ];
   }
 
+  function splitBoxVertically(box) {
+    const halfCy = Math.round(box.cy / 2);
+    const bottom_y = box.y + halfCy;
+    const bottom_cy = box.cy - halfCy;
+    const top = { x: box.x, y: box.y, cx: box.cx, cy: halfCy };
+    const bottom = { x: box.x, y: bottom_y, cx: box.cx, cy: bottom_cy };
+    return [top, bottom];
+  }
+
+  // auxImages 固定顺序 [粉丝图, 播放图]（由调用方过滤 null 后传入）：单张辅助图铺满整个
+  // auxBox（与改动前"仅粉丝图"时的效果一致）；两张辅助图时对 auxBox 上下二分，粉丝图在上、
+  // 播放数据图在下。
+  function layoutAuxImages(auxImages, auxBox) {
+    if (auxImages.length <= 1) {
+      return auxImages.map((image) => ({ image, position: fitPictureIntoBox(image, auxBox) }));
+    }
+    const [topBox, bottomBox] = splitBoxVertically(auxBox);
+    return [
+      { image: auxImages[0], position: fitPictureIntoBox(auxImages[0], topBox) },
+      { image: auxImages[1], position: fitPictureIntoBox(auxImages[1], bottomBox) },
+    ];
+  }
+
   function isReleaseInfoLabelText(text) {
     return RELEASE_INFO_LABEL_PATTERN.test(String(text || ""));
   }

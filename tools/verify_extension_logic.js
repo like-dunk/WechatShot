@@ -233,6 +233,8 @@ function loadPptxExportsWithInternals() {
       "  window.__buildAuxImageMap = buildAuxImageMap;",
       "  window.__resolveAuxImageForTask = resolveAuxImageForTask;",
       "  window.__resolveAuxImageFromImageName = resolveAuxImageFromImageName;",
+      "  window.__splitBoxVertically = splitBoxVertically;",
+      "  window.__layoutAuxImages = layoutAuxImages;",
       "  window.PptxClippings = {",
     ].join("\n")
   );
@@ -243,6 +245,8 @@ function loadPptxExportsWithInternals() {
     __buildAuxImageMap: context.__buildAuxImageMap,
     __resolveAuxImageForTask: context.__resolveAuxImageForTask,
     __resolveAuxImageFromImageName: context.__resolveAuxImageFromImageName,
+    __splitBoxVertically: context.__splitBoxVertically,
+    __layoutAuxImages: context.__layoutAuxImages,
     __setFetch: (impl) => { fetchImpl = impl; },
   };
 }
@@ -828,6 +832,26 @@ function testAuxImageMatching() {
   assert.strictEqual(pptx.__resolveAuxImageFromImageName({ name: "未知.png" }, map), null);
 }
 
+function testLayoutAuxImages() {
+  const pptx = loadPptxExportsWithInternals();
+  const box = { x: 100, y: 200, cx: 1000, cy: 800 };
+  const [top, bottom] = pptx.__splitBoxVertically(box);
+  assert.deepStrictEqual(plain(top), { x: 100, y: 200, cx: 1000, cy: 400 });
+  assert.deepStrictEqual(plain(bottom), { x: 100, y: 600, cx: 1000, cy: 400 });
+  // 单张辅助图：铺满整个 auxBox（等价于原有「仅粉丝图」时的效果）。
+  const single = pptx.__layoutAuxImages([{ width: 16, height: 9 }], box);
+  assert.strictEqual(single.length, 1);
+  assert.ok(plain(single[0].position).cy <= box.cy);
+  // 两张辅助图：按传入顺序上下二分，第一张（粉丝图）在上半区，第二张（播放图）在下半区。
+  const fan = { width: 16, height: 9 };
+  const playback = { width: 16, height: 9 };
+  const both = pptx.__layoutAuxImages([fan, playback], box);
+  assert.strictEqual(both.length, 2);
+  assert.strictEqual(both[0].image, fan);
+  assert.strictEqual(both[1].image, playback);
+  assert.ok(plain(both[0].position).y < plain(both[1].position).y, "粉丝图应排在播放数据图上方");
+}
+
 function testOutputFolderNaming() {
   const background = loadBackgroundExports();
   const pptx = loadPptxExports();
@@ -1039,6 +1063,7 @@ const tests = [
   testPlatformNavigationHelpers,
   testPptMatching,
   testAuxImageMatching,
+  testLayoutAuxImages,
   testOutputFolderNaming,
   testAutoPptTemplateIdFlowsThroughOptions,
   testTemplateCacheRoundTrip,
