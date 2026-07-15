@@ -1116,7 +1116,8 @@ async function buildPptByMode(source, modeValue, options = {}) {
   const matchingTasks = options.tasks || (allParsedTasks.length ? allParsedTasks : parsedTasks);
   const templateBytes = options.templateBytes || (currentPptTemplate && currentPptTemplate.bytes) || undefined;
   const fanImages = await resolveFanImagesForPpt(options);
-  const pptOptions = { templateBytes, fanImages };
+  const playbackImages = await resolvePlaybackImagesForPpt(options);
+  const pptOptions = { templateBytes, fanImages, playbackImages };
   if (modeValue === "link-screenshot") {
     return source.type === "zip"
       ? window.PptxClippings.buildLinkScreenshotFromZipFile(source.file, matchingTasks, { templateBytes })
@@ -1214,25 +1215,95 @@ function shouldPersistFanSourceForAutoPpt(options) {
   );
 }
 
+async function resolvePlaybackImagesForPpt(options = {}) {
+  if (Array.isArray(options.playbackImages)) return options.playbackImages;
+  if (options.autoPptPlaybackSourceId && window.PlaybackSourceCache) {
+    try {
+      const record = await window.PlaybackSourceCache.getPlaybackSource(options.autoPptPlaybackSourceId);
+      if (record) return await window.PptxClippings.loadImagesFromCacheRecord(record);
+    } catch (error) {
+      addLog(`读取后台播放数据截图缓存失败，尝试改用当前弹窗内仍保留的来源：${error.message}`, "warning");
+    }
+  }
+  if (!isReleaseInfoLikeMode(options.modeValue || elements.pptModeInput.value)) return [];
+  const playbackSource = options.playbackSource || currentPptPlaybackSource;
+  if (playbackSource) {
+    try {
+      return await window.PptxClippings.loadImagesFromPptSource(playbackSource);
+    } catch (error) {
+      addLog(`读取后台播放数据截图来源失败：${error.message}`, "warning");
+      return [];
+    }
+  }
+  return currentExcelPlaybackImages;
+}
+
+async function persistPlaybackSourceForAutoPpt() {
+  if (!window.PlaybackSourceCache) return "";
+  await window.PlaybackSourceCache.cleanupOldPlaybackSources();
+  const files = [];
+  if (currentPptPlaybackSource && currentPptPlaybackSource.type === "zip") {
+    const images = await window.PptxClippings.loadImagesFromPptSource(currentPptPlaybackSource);
+    images.forEach((image) => {
+      files.push({
+        fileName: getBaseFileName(image.name),
+        blob: new Blob([image.data], { type: image.mime || "image/png" }),
+      });
+    });
+  } else if (currentPptPlaybackSource) {
+    for (const file of currentPptPlaybackSource.files || []) {
+      const relativePath = file.webkitRelativePath || file.name;
+      if (!window.PptxClippings.isImageZipEntry(relativePath)) continue;
+      files.push({
+        fileName: relativePath,
+        blob: file,
+      });
+    }
+  } else {
+    currentExcelPlaybackImages.forEach((image) => {
+      files.push({
+        fileName: getBaseFileName(image.name),
+        blob: new Blob([image.data], { type: image.mime || "image/png" }),
+      });
+    });
+  }
+  if (!files.length) return "";
+  return window.PlaybackSourceCache.putPlaybackSource({
+    name: currentPptPlaybackSource ? currentPptPlaybackSource.name : "Excel 内嵌后台播放数据截图",
+    files,
+  });
+}
+
+function shouldPersistPlaybackSourceForAutoPpt(options) {
+  return Boolean(
+    options.autoGeneratePpt
+    && isReleaseInfoLikeMode(options.autoPptMode || elements.pptModeInput.value)
+    && (currentPptPlaybackSource || currentExcelPlaybackImages.length)
+  );
+}
+
 function buildPptSourceInfo(name, imageCount) {
   const mode = getCurrentPptMode();
   const matchingTaskCount = allParsedTasks.length || parsedTasks.length;
   const taskText = (mode.value === "link-screenshot" || isReleaseInfoLikeMode(mode.value)) && matchingTaskCount ? `，将优先匹配 ${matchingTaskCount} 条已导入任务` : "";
   const fanCount = currentPptFanSource ? currentPptFanSource.imageCount : currentExcelFanImages.length;
   const fanText = isReleaseInfoLikeMode(mode.value) && fanCount ? `，粉丝量截图 ${fanCount} 张将按 Excel 序号+昵称匹配` : "";
-  return `${name}，识别到 ${imageCount} 张图片，将生成${mode.label} PPT${taskText}${fanText}`;
+  const playbackCount = currentPptPlaybackSource ? currentPptPlaybackSource.imageCount : currentExcelPlaybackImages.length;
+  const playbackText = isReleaseInfoLikeMode(mode.value) && playbackCount ? `，后台播放数据截图 ${playbackCount} 张将按 Excel 序号+昵称匹配` : "";
+  return `${name}，识别到 ${imageCount} 张图片，将生成${mode.label} PPT${taskText}${fanText}${playbackText}`;
 }
 
 function buildPptResultInfo(mode, result) {
   const fanText = result.fanMatchedCount ? `，其中 ${result.fanMatchedCount} 页含粉丝量截图` : "";
+  const playbackText = result.playbackMatchedCount ? `，${result.playbackMatchedCount} 页含后台播放数据截图` : "";
   if (mode.value === "link-screenshot") {
     return `已生成：${result.imageCount} 张图片，${result.slideCount} 页链接截图单图单页`;
   }
   if (mode.value === "release-info-screenshot") {
-    return `已生成：${result.imageCount} 张图片，${result.slideCount} 页发布信息截图单图单页${fanText}`;
+    return `已生成：${result.imageCount} 张图片，${result.slideCount} 页发布信息截图单图单页${fanText}${playbackText}`;
   }
   if (mode.value === "dawanqu") {
-    return `已生成：${result.imageCount} 张图片，${result.slideCount} 页大湾区崭新模版${fanText}`;
+    return `已生成：${result.imageCount} 张图片，${result.slideCount} 页大湾区崭新模版${fanText}${playbackText}`;
   }
   return `已生成：${result.imageCount} 张图片，${result.slideCount} 页发布剪报，每页 ${result.imagesPerSlide} 张，布局 ${result.grid}`;
 }
@@ -3500,6 +3571,7 @@ async function startRun() {
     autoPptTitle: elements.pptReleaseTitleInput ? elements.pptReleaseTitleInput.value : "",
     autoPptTemplateId: isPptModeLockedByTemplate() && currentPptTemplate ? currentPptTemplate.id || "" : "",
     autoPptFanSourceId: "",
+    autoPptPlaybackSourceId: "",
     enableSupplementRepairZip: getCurrentCaptureMode() === "supplement",
     douyinBatchSize: DOUYIN_BATCH_SIZE,
     douyinWindowMode: elements.douyinWindowModeInput.value,
@@ -3522,6 +3594,23 @@ async function startRun() {
       // 继续执行，只是自动生成的 PPT 里不会带粉丝量截图（等同于没有提供来源时的效果）。
       addLog(`粉丝量截图缓存失败，本次截图任务仍会继续，自动生成的 PPT 将不含粉丝量截图：${error.message}`, "warning");
       options.autoPptFanSourceId = "";
+    }
+    isPreparingSupplementStart = false;
+    updateStartButtonDisabled();
+  }
+  if (shouldPersistPlaybackSourceForAutoPpt(options)) {
+    try {
+      isPreparingSupplementStart = true;
+      updateStartButtonDisabled();
+      addLog("正在缓存后台播放数据截图来源，供截图完成后自动 PPT 使用...");
+      options.autoPptPlaybackSourceId = await persistPlaybackSourceForAutoPpt();
+      const playbackCount = currentPptPlaybackSource ? currentPptPlaybackSource.imageCount : currentExcelPlaybackImages.length;
+      const playbackOrigin = currentPptPlaybackSource ? "" : "（来自 Excel 内嵌图片自动识别）";
+      addLog(`后台播放数据截图来源已缓存：${playbackCount} 张${playbackOrigin}，将在自动 PPT 中按 Excel 序号+昵称匹配`, "success");
+    } catch (error) {
+      // 后台播放数据截图只是自动 PPT 的锦上添花项，缓存失败不应该阻断本次与它无关的整批截图任务。
+      addLog(`后台播放数据截图缓存失败，本次截图任务仍会继续，自动生成的 PPT 将不含后台播放数据截图：${error.message}`, "warning");
+      options.autoPptPlaybackSourceId = "";
     }
     isPreparingSupplementStart = false;
     updateStartButtonDisabled();
@@ -3693,6 +3782,7 @@ async function autoGeneratePptFromCompletedRun(state) {
       title: state.options.autoPptTitle || "",
       templateBytes,
       autoPptFanSourceId: state.options.autoPptFanSourceId || "",
+      autoPptPlaybackSourceId: state.options.autoPptPlaybackSourceId || "",
       modeValue: mode.value,
     });
     await window.PptxClippings.downloadResult(result);
