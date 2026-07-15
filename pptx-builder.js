@@ -810,28 +810,21 @@
       const slideTarget = isFirst ? templateSlide.target : `slides/slide${nextSlideNumber}.xml`;
       const slideFileName = slideTarget.split("/").pop();
       const relsPath = `ppt/slides/_rels/${slideFileName}.rels`;
-      const imageLinks = [];
-      const mediaName = `image${nextMediaNumber}.${item.image.ext}`;
-      nextMediaNumber += 1;
-      const imageLink = {
-        ...item.image,
-        relId: "",
-        target: `../media/${mediaName}`,
-      };
-      files.set(`ppt/media/${mediaName}`, item.image.data);
-      imageLinks.push(imageLink);
-      if (item.fanImage) {
-        const fanMediaName = `image${nextMediaNumber}.${item.fanImage.ext}`;
+      const registerMedia = (image) => {
+        const mediaName = `image${nextMediaNumber}.${image.ext}`;
         nextMediaNumber += 1;
-        const fanImageLink = {
-          ...item.fanImage,
-          relId: "",
-          target: `../media/${fanMediaName}`,
-        };
-        files.set(`ppt/media/${fanMediaName}`, item.fanImage.data);
-        imageLinks.push(fanImageLink);
-      }
-      const slideRels = buildReleaseInfoSlideRelationships(baseRelsXml, imageLinks);
+        const link = { ...image, relId: "", target: `../media/${mediaName}` };
+        files.set(`ppt/media/${mediaName}`, image.data);
+        return link;
+      };
+      // imageLinks 用 kind 显式区分 main/fan/playback，不能再用数组下标隐式代表某一种辅助图：
+      // 辅助图现在可能是「仅粉丝」「仅播放」「两者都有」三种情况之一，位置下标 1 在
+      // 「仅播放、无粉丝」时会指向播放图而非粉丝图，若渲染层继续假定下标 1 恒为粉丝图，
+      // 会把播放图错误地渲染成粉丝图占位（标签、位置都会用错）。
+      const imageLinks = { main: registerMedia(item.image) };
+      if (item.fanImage) imageLinks.fan = registerMedia(item.fanImage);
+      if (item.playbackImage) imageLinks.playback = registerMedia(item.playbackImage);
+      const slideRels = buildReleaseInfoSlideRelationships(baseRelsXml, Object.values(imageLinks));
       const slideXml = preserveTemplateLayout
         ? buildReleaseInfoTemplateSlideXml(baseSlideXml, imageLinks, item)
         : buildReleaseInfoScreenshotSlideXml(baseSlideXml, imageLinks, item);
@@ -938,15 +931,17 @@
       spTree.appendChild(createTextBoxNode(doc, nextShapeId, `发布信息 ${index + 1}`, row.text, row.position, { fontSize: row.fontSize }));
       nextShapeId += 1;
     });
-    const mainImage = imageLinks[0];
-    const fanImage = imageLinks[1] || null;
-    if (fanImage) {
+    const mainImage = imageLinks.main;
+    const auxImages = [imageLinks.fan, imageLinks.playback].filter(Boolean);
+    if (auxImages.length) {
       const [leftBox, rightBox] = splitBoxHorizontally(RELEASE_INFO_LAYOUT.image);
-      const mainPosition = fitPictureIntoBox(mainImage, leftBox);
-      const fanPosition = fitPictureIntoBox(fanImage, rightBox);
-      spTree.appendChild(createPictureNode(doc, nextShapeId, item.account || "发布截图", mainImage.relId, mainPosition));
+      spTree.appendChild(createPictureNode(doc, nextShapeId, item.account || "发布截图", mainImage.relId, fitPictureIntoBox(mainImage, leftBox)));
       nextShapeId += 1;
-      spTree.appendChild(createPictureNode(doc, nextShapeId, "粉丝量截图", fanImage.relId, fanPosition));
+      layoutAuxImages(auxImages, rightBox).forEach(({ image, position }) => {
+        const label = image === imageLinks.fan ? "粉丝量截图" : "后台播放数据截图";
+        spTree.appendChild(createPictureNode(doc, nextShapeId, label, image.relId, position));
+        nextShapeId += 1;
+      });
     } else {
       const pic = createPictureNode(doc, nextShapeId, item.account || "发布截图", mainImage.relId, buildReleaseInfoPicturePosition(mainImage));
       spTree.appendChild(pic);
@@ -971,29 +966,31 @@
     const pictures = Array.from(doc.getElementsByTagNameNS(PML, "pic"));
     const mainPlaceholder = pictures[0] || null;
     const fanPlaceholder = pictures[1] || null;
-    const mainImage = imageLinks[0];
-    const fanImage = imageLinks[1] || null;
+    const mainImage = imageLinks.main;
+    const auxImages = [imageLinks.fan, imageLinks.playback].filter(Boolean);
     const spTree = doc.getElementsByTagNameNS(PML, "spTree")[0];
     let nextShapeId = getMaxShapeId(doc) + 1;
     buildReleaseInfoRows(item).forEach((row, index) => {
       spTree.appendChild(createTextBoxNode(doc, nextShapeId, `发布信息 ${index + 1}`, row.text, row.position, { fontSize: row.fontSize }));
       nextShapeId += 1;
     });
-    // 只移除我们实际要替换的主图/粉丝图占位图形，模板里其余图片（如 logo）保持不动。
+    // 只移除我们实际要替换的主图/辅助图占位图形，模板里其余图片（如 logo）保持不动。
     [mainPlaceholder, fanPlaceholder].forEach((picture) => { if (picture) picture.parentNode.removeChild(picture); });
-    if (mainImage && fanImage && fanPlaceholder) {
-      const mainBox = mainPlaceholder ? getShapeGeometry(mainPlaceholder) : buildReleaseInfoPicturePosition(mainImage);
+    const mainBox = mainPlaceholder ? getShapeGeometry(mainPlaceholder) : buildReleaseInfoPicturePosition(mainImage);
+    if (!auxImages.length) {
       spTree.appendChild(createPictureNode(doc, getMaxShapeId(doc) + 1, item.account || "发布截图", mainImage.relId, fitPictureIntoBox(mainImage, mainBox)));
-      spTree.appendChild(createPictureNode(doc, getMaxShapeId(doc) + 1, "粉丝量截图", fanImage.relId, fitPictureIntoBox(fanImage, getShapeGeometry(fanPlaceholder))));
-    } else if (mainImage) {
-      const box = mainPlaceholder ? getShapeGeometry(mainPlaceholder) : buildReleaseInfoPicturePosition(mainImage);
-      if (fanImage) {
-        const [leftBox, rightBox] = splitBoxHorizontally(box);
-        spTree.appendChild(createPictureNode(doc, getMaxShapeId(doc) + 1, item.account || "发布截图", mainImage.relId, fitPictureIntoBox(mainImage, leftBox)));
-        spTree.appendChild(createPictureNode(doc, getMaxShapeId(doc) + 1, "粉丝量截图", fanImage.relId, fitPictureIntoBox(fanImage, rightBox)));
-      } else {
-        spTree.appendChild(createPictureNode(doc, getMaxShapeId(doc) + 1, item.account || "发布截图", mainImage.relId, fitPictureIntoBox(mainImage, box)));
-      }
+    } else {
+      // 模板只保留了 1 个辅助图占位（fanPlaceholder）：占位存在时把它自身几何框当作辅助区，
+      // 主图铺满 mainBox 不收缩；占位不存在时对 mainBox 做左右二分。辅助区内若同时有
+      // 粉丝图与播放图，再由 layoutAuxImages 对辅助区上下二分——不需要模板里新增第 3 个占位。
+      const [mainRenderBox, auxBox] = fanPlaceholder
+        ? [mainBox, getShapeGeometry(fanPlaceholder)]
+        : splitBoxHorizontally(mainBox);
+      spTree.appendChild(createPictureNode(doc, getMaxShapeId(doc) + 1, item.account || "发布截图", mainImage.relId, fitPictureIntoBox(mainImage, mainRenderBox)));
+      layoutAuxImages(auxImages, auxBox).forEach(({ image, position }) => {
+        const label = image === imageLinks.fan ? "粉丝量截图" : "后台播放数据截图";
+        spTree.appendChild(createPictureNode(doc, getMaxShapeId(doc) + 1, label, image.relId, position));
+      });
     }
     return serializeXml(doc);
   }
