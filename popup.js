@@ -964,7 +964,7 @@ async function resolveFanImagesForPpt(options = {}) {
   if (options.autoPptFanSourceId && window.FanSourceCache) {
     try {
       const record = await window.FanSourceCache.getFanSource(options.autoPptFanSourceId);
-      if (record) return await window.PptxClippings.loadFanImagesFromCacheRecord(record);
+      if (record) return await window.PptxClippings.loadImagesFromCacheRecord(record);
     } catch (error) {
       addLog(`读取粉丝量截图缓存失败，尝试改用当前弹窗内仍保留的来源：${error.message}`, "warning");
     }
@@ -999,7 +999,7 @@ async function persistFanSourceForAutoPpt() {
     });
   } else if (currentPptFanSource) {
     // 过滤掉非图片文件（如 macOS Finder 打开过文件夹后留下的 .DS_Store）：
-    // loadFanImagesFromCacheRecord 后续会对缓存里每个文件调用 normalizeImage 且没有单文件容错，
+    // loadImagesFromCacheRecord 后续会对缓存里每个文件调用 normalizeImage 且没有单文件容错，
     // 混入一个无法解码的文件会导致该次读取把全部粉丝量截图一起丢弃。
     for (const file of currentPptFanSource.files || []) {
       const relativePath = file.webkitRelativePath || file.name;

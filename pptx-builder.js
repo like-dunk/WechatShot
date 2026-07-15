@@ -262,6 +262,7 @@
       imagesPerSlide: 1,
       grid: "1×1",
       fanMatchedCount: items.filter((item) => item.fanImage).length,
+      playbackMatchedCount: items.filter((item) => item.playbackImage).length,
     };
   }
 
@@ -278,6 +279,7 @@
       imagesPerSlide: 1,
       grid: "1×1",
       fanMatchedCount: items.filter((item) => item.fanImage).length,
+      playbackMatchedCount: items.filter((item) => item.playbackImage).length,
     };
   }
 
@@ -714,7 +716,7 @@
     return images;
   }
 
-  async function loadFanImagesFromCacheRecord(record) {
+  async function loadImagesFromCacheRecord(record) {
     if (!record || !Array.isArray(record.files) || !record.files.length) return [];
     const images = [];
     for (const file of record.files) {
@@ -1609,7 +1611,7 @@
     buildDawanquFromImageFiles,
     buildLinkScreenshotItems,
     loadImagesFromPptSource,
-    loadFanImagesFromCacheRecord,
+    loadImagesFromCacheRecord,
     normalizeImage,
     isImageZipEntry,
     downloadResult,

@@ -49,7 +49,7 @@ async function resolveFanImagesForPpt(options = {}) {
   if (!id || !window.FanSourceCache) return [];
   try {
     const record = await window.FanSourceCache.getFanSource(id);
-    if (record) return await window.PptxClippings.loadFanImagesFromCacheRecord(record);
+    if (record) return await window.PptxClippings.loadImagesFromCacheRecord(record);
   } catch (error) {
     setStatus(`读取粉丝量截图缓存失败：${error.message}`);
   }
