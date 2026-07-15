@@ -1540,6 +1540,7 @@ function normalizeOptions(options, tasks = []) {
     autoPptTitle: String(options.autoPptTitle || ""),
     autoPptTemplateId: String(options.autoPptTemplateId || ""),
     autoPptFanSourceId: String(options.autoPptFanSourceId || ""),
+    autoPptPlaybackSourceId: String(options.autoPptPlaybackSourceId || ""),
     enableSupplementRepairZip: Boolean(options.enableSupplementRepairZip),
     captureSize: normalizeCaptureSize(options),
   };
@@ -1745,6 +1746,7 @@ async function saveAutoPptSessionFromState() {
       autoPptTitle: state.options.autoPptTitle || "",
       autoPptTemplateId: state.options.autoPptTemplateId || "",
       autoPptFanSourceId: state.options.autoPptFanSourceId || "",
+      autoPptPlaybackSourceId: state.options.autoPptPlaybackSourceId || "",
     },
     screenshots: buildSuccessScreenshotRecords(),
     autoPptGenerated: Boolean(state.autoPptGenerated),

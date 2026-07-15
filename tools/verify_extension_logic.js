@@ -907,6 +907,24 @@ function testAutoPptTemplateIdFlowsThroughOptions() {
   assert.strictEqual(noTemplate.autoPptTemplateId, "");
 }
 
+function testAutoPptPlaybackSourceIdFlowsThroughOptions() {
+  const background = loadBackgroundExports();
+  // 后台播放数据截图缓存 id 必须从启动 options 一路保留到 normalizeOptions 输出，
+  // 逻辑与 autoPptFanSourceId/autoPptTemplateId 完全对称。
+  const withPlayback = background.normalizeOptions(
+    { autoGeneratePpt: true, autoPptMode: "release-info-screenshot", autoPptPlaybackSourceId: "playback-abc-123" },
+    [{ url: "https://weixin.qq.com/sph/a", platform: "weixin" }]
+  );
+  assert.strictEqual(withPlayback.autoPptPlaybackSourceId, "playback-abc-123");
+  assert.strictEqual(background.getPublicOptions(withPlayback).autoPptPlaybackSourceId, "playback-abc-123");
+  // 没有缓存后台播放数据截图时，字段为空字符串。
+  const noPlayback = background.normalizeOptions(
+    { autoGeneratePpt: true, autoPptMode: "clippings" },
+    [{ url: "https://weixin.qq.com/sph/a", platform: "weixin" }]
+  );
+  assert.strictEqual(noPlayback.autoPptPlaybackSourceId, "");
+}
+
 async function testTemplateCacheRoundTrip() {
   // 用内存版 IndexedDB 模拟，验证 TemplateCache 存取闭环：存入字节 -> 按 id 取回字节一致；
   // 取不存在的 id 返回空（对应回退到内置模板的安全路径）。
@@ -1093,6 +1111,7 @@ const tests = [
   testReleaseInfoItemsResolveFanAndPlayback,
   testOutputFolderNaming,
   testAutoPptTemplateIdFlowsThroughOptions,
+  testAutoPptPlaybackSourceIdFlowsThroughOptions,
   testTemplateCacheRoundTrip,
   testPlaybackSourceCacheRoundTrip,
   testLoadTemplateFilesFallback,
