@@ -600,15 +600,20 @@
     const title = normalizeLinkScreenshotText(options.title) || RELEASE_INFO_DEFAULT_TITLE;
     const availableTasks = Array.isArray(tasks) ? tasks : [];
     const fanMap = buildAuxImageMap(options.fanImages || [], availableTasks);
+    const playbackMap = buildAuxImageMap(options.playbackImages || [], availableTasks);
     return buildLinkScreenshotItems(images, availableTasks).map((item) => {
       const task = item.task || {};
       const releaseInfo = task.releaseInfo || {};
       const fanImage = item.task
         ? resolveAuxImageForTask(item.task, fanMap) || resolveAuxImageFromImageName(item.image, fanMap)
         : null;
+      const playbackImage = item.task
+        ? resolveAuxImageForTask(item.task, playbackMap) || resolveAuxImageFromImageName(item.image, playbackMap)
+        : null;
       return {
         image: item.image,
         fanImage,
+        playbackImage,
         title,
         account: normalizeLinkScreenshotText(releaseInfo.account) || normalizeLinkScreenshotText(task.nickname) || item.nickname,
         platform: normalizeLinkScreenshotText(releaseInfo.platform) || normalizeLinkScreenshotText(task.platformLabel),

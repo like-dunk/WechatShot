@@ -852,6 +852,32 @@ function testLayoutAuxImages() {
   assert.ok(plain(both[0].position).y < plain(both[1].position).y, "粉丝图应排在播放数据图上方");
 }
 
+function testReleaseInfoItemsResolveFanAndPlayback() {
+  const pptx = loadPptxExportsWithInternals();
+  const images = [
+    { name: "1_抖音账号.png" },
+    { name: "2_视频号账号.png" },
+    { name: "3_头条账号.png" },
+  ];
+  const tasks = [
+    { fileName: "1_抖音账号.png", sequence: "1", importSequence: 1, nickname: "抖音账号", url: "https://www.douyin.com/video/1" },
+    { fileName: "2_视频号账号.png", sequence: "2", importSequence: 2, nickname: "视频号账号", url: "https://weixin.qq.com/sph/a" },
+    { fileName: "3_头条账号.png", sequence: "3", importSequence: 3, nickname: "头条账号", url: "https://www.toutiao.com/article/1" },
+  ];
+  // 账号1只有粉丝图，账号2只有播放图，账号3两者都没有——覆盖三种组合，
+  // 确保「仅播放图、无粉丝图」不会被误判成粉丝图（对应设计文档 4.2 节的修正点）。
+  const fanImages = [{ name: "1_抖音账号.png" }];
+  const playbackImages = [{ name: "2_视频号账号.png" }];
+  const items = pptx.__buildReleaseInfoScreenshotItems(images, tasks, { fanImages, playbackImages });
+  const byAccount = new Map(items.map((item) => [item.account, item]));
+  assert.ok(byAccount.get("抖音账号").fanImage, "账号1应匹配到粉丝图");
+  assert.strictEqual(byAccount.get("抖音账号").playbackImage, null, "账号1不应匹配到播放图");
+  assert.strictEqual(byAccount.get("视频号账号").fanImage, null, "账号2不应匹配到粉丝图");
+  assert.ok(byAccount.get("视频号账号").playbackImage, "账号2应匹配到播放图");
+  assert.strictEqual(byAccount.get("头条账号").fanImage, null);
+  assert.strictEqual(byAccount.get("头条账号").playbackImage, null);
+}
+
 function testOutputFolderNaming() {
   const background = loadBackgroundExports();
   const pptx = loadPptxExports();
@@ -1064,6 +1090,7 @@ const tests = [
   testPptMatching,
   testAuxImageMatching,
   testLayoutAuxImages,
+  testReleaseInfoItemsResolveFanAndPlayback,
   testOutputFolderNaming,
   testAutoPptTemplateIdFlowsThroughOptions,
   testTemplateCacheRoundTrip,
