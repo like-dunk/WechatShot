@@ -90,10 +90,15 @@ let currentPptFanSource = null;
 // 未手动上传粉丝量截图时的兜底来源：从已导入 Excel 里模糊匹配到「粉丝」的列中提取内嵌截图，
 // 已按「序号_昵称.ext」命名，可直接当作 fanImages 使用。手动上传的 currentPptFanSource 始终优先。
 let currentExcelFanImages = [];
+let currentPptPlaybackSource = null;
+// 未手动上传后台播放数据截图时的兜底来源：从已导入 Excel 里模糊匹配到「后台播放」的列中提取内嵌截图，
+// 已按「序号_昵称.ext」命名，可直接当作 playbackImages 使用。手动上传的 currentPptPlaybackSource 始终优先。
+let currentExcelPlaybackImages = [];
 let currentPptTemplate = null;
 let currentSupplementSource = null;
 let pptSourceReadToken = 0;
 let pptFanSourceReadToken = 0;
+let pptPlaybackSourceReadToken = 0;
 let isGeneratingPpt = false;
 let isAutoGeneratingPpt = false;
 let supplementSourceReadToken = 0;
@@ -399,7 +404,8 @@ async function handleTaskFiles(files) {
       continue;
     }
     const fanImages = await extractFanImagesFromCellImages(parsed.rows, parsed.cellImages, file.name);
-    incoming.push({ fileName: file.name, rows: parsed.rows, fillMarks: parsed.fillMarks, fanImages });
+    const playbackImages = await extractPlaybackImagesFromCellImages(parsed.rows, parsed.cellImages, file.name);
+    incoming.push({ fileName: file.name, rows: parsed.rows, fillMarks: parsed.fillMarks, fanImages, playbackImages });
   }
   if (!incoming.length) {
     if (!importedTaskFiles.length) elements.fileInfo.textContent = "解析失败：没有可导入的有效表格";
@@ -429,6 +435,11 @@ async function applyImportedTaskFiles() {
       addLog(`已从 Excel 内嵌图片自动识别到 ${currentExcelFanImages.length} 张粉丝量截图，未手动上传时将按 Excel 序号+昵称自动匹配`, "success");
     }
     syncPptFanSourceInfo();
+    currentExcelPlaybackImages = importedTaskFiles.flatMap((file) => file.playbackImages || []);
+    if (currentExcelPlaybackImages.length) {
+      addLog(`已从 Excel 内嵌图片自动识别到 ${currentExcelPlaybackImages.length} 张后台播放数据截图，未手动上传时将按 Excel 序号+昵称自动匹配`, "success");
+    }
+    syncPptPlaybackSourceInfo();
     if (importedTaskFiles.length === 1) {
       const only = importedTaskFiles[0];
       addLog(`开始解析：${only.fileName}`);
@@ -503,6 +514,8 @@ function resetImportState() {
   currentImportFillMarks = null;
   currentExcelFanImages = [];
   syncPptFanSourceInfo();
+  currentExcelPlaybackImages = [];
+  syncPptPlaybackSourceInfo();
   elements.startButton.disabled = true;
 }
 
@@ -851,6 +864,60 @@ function resolveFanColumnIndex(headerRow, cellImages) {
   const candidateCols = [];
   for (let col = 0; col < getMaxColumnCount([headerRow]); col += 1) {
     if (normalizeHeader(headerRow[col]).includes("粉丝")) candidateCols.push(col);
+  }
+  if (!candidateCols.length) return -1;
+  if (candidateCols.length === 1) return candidateCols[0];
+  const imageColCounts = new Map();
+  cellImages.forEach((image) => {
+    if (candidateCols.includes(image.col)) imageColCounts.set(image.col, (imageColCounts.get(image.col) || 0) + 1);
+  });
+  if (!imageColCounts.size) return candidateCols[0];
+  return Array.from(imageColCounts.entries()).sort((a, b) => b[1] - a[1])[0][0];
+}
+
+// 从某个已解析 Excel 文件的 cellImages 中，挑出实际内嵌了截图、且表头模糊匹配「后台播放」的
+// 那一列，产出与手动上传文件夹同名规则一致的 playbackImages 条目。逻辑与
+// extractFanImagesFromCellImages 完全对称，仅表头关键词与产物字段名不同。
+async function extractPlaybackImagesFromCellImages(rows, cellImages, fileName = "") {
+  if (!Array.isArray(cellImages) || !cellImages.length || !Array.isArray(rows)) return [];
+  const headerRowIndex = findLikelyHeaderRowIndex(rows);
+  const headerRow = rows[headerRowIndex] || [];
+  const playbackColumnIndex = resolvePlaybackColumnIndex(headerRow, cellImages);
+  if (playbackColumnIndex < 0) return [];
+  const sequenceMode = elements.sequenceModeInput ? elements.sequenceModeInput.value : "sequence";
+  const { tasks: rowTasks } = buildTasks(rows, null, sequenceMode);
+  const taskByRow = new Map();
+  rowTasks.forEach((task) => {
+    if (!taskByRow.has(task.rowNumber - 1)) taskByRow.set(task.rowNumber - 1, task);
+  });
+  const usedNames = new Set();
+  const images = [];
+  for (const cellImage of cellImages) {
+    if (cellImage.col !== playbackColumnIndex || cellImage.row <= headerRowIndex) continue;
+    const task = taskByRow.get(cellImage.row);
+    if (!task || !task.nickname) continue;
+    const baseName = `${task.importSequence}_${task.nickname}`;
+    let name = `${baseName}.${cellImage.ext}`;
+    let counter = 2;
+    while (usedNames.has(name)) {
+      name = `${task.importSequence}-${counter}_${task.nickname}.${cellImage.ext}`;
+      counter += 1;
+    }
+    usedNames.add(name);
+    try {
+      images.push(await window.PptxClippings.normalizeImage(name, cellImage.bytes));
+    } catch (error) {
+      addLog(`解析「${fileName}」内嵌后台播放数据截图失败（${task.nickname}）：${error.message}`, "warning");
+    }
+  }
+  return images;
+}
+
+// 表头模糊匹配「后台播放」的列可能不止一个，此时优先选真正承载内嵌图片的那一列。
+function resolvePlaybackColumnIndex(headerRow, cellImages) {
+  const candidateCols = [];
+  for (let col = 0; col < getMaxColumnCount([headerRow]); col += 1) {
+    if (normalizeHeader(headerRow[col]).includes("后台播放")) candidateCols.push(col);
   }
   if (!candidateCols.length) return -1;
   if (candidateCols.length === 1) return candidateCols[0];
