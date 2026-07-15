@@ -56,11 +56,25 @@ async function resolveFanImagesForPpt(options = {}) {
   return [];
 }
 
+async function resolvePlaybackImagesForPpt(options = {}) {
+  if (Array.isArray(options.playbackImages)) return options.playbackImages;
+  const id = options.autoPptPlaybackSourceId;
+  if (!id || !window.PlaybackSourceCache) return [];
+  try {
+    const record = await window.PlaybackSourceCache.getPlaybackSource(id);
+    if (record) return await window.PptxClippings.loadImagesFromCacheRecord(record);
+  } catch (error) {
+    setStatus(`读取后台播放数据截图缓存失败：${error.message}`);
+  }
+  return [];
+}
+
 async function buildPptByMode(source, modeValue, options = {}) {
   const matchingTasks = options.tasks || [];
   const templateBytes = options.templateBytes || undefined;
   const fanImages = await resolveFanImagesForPpt(options);
-  const pptOptions = { templateBytes, fanImages };
+  const playbackImages = await resolvePlaybackImagesForPpt(options);
+  const pptOptions = { templateBytes, fanImages, playbackImages };
   if (modeValue === "link-screenshot") {
     return window.PptxClippings.buildLinkScreenshotFromImageFiles(source.files, source.name, matchingTasks, { templateBytes });
   }
@@ -117,6 +131,7 @@ async function runAutoPptGeneration() {
       title: state.options.autoPptTitle || "",
       templateBytes,
       autoPptFanSourceId: state.options.autoPptFanSourceId || "",
+      autoPptPlaybackSourceId: state.options.autoPptPlaybackSourceId || "",
     });
     await window.PptxClippings.downloadResult(result);
     await sendMessage({ type: "MARK_AUTO_PPT_GENERATED", result: { fileName: result.fileName, imageCount: result.imageCount, slideCount: result.slideCount, mode: modeValue } });
