@@ -1251,6 +1251,9 @@ async function persistPlaybackSourceForAutoPpt() {
       });
     });
   } else if (currentPptPlaybackSource) {
+    // 过滤掉非图片文件（如 macOS Finder 打开过文件夹后留下的 .DS_Store）：
+    // loadImagesFromCacheRecord 后续会对缓存里每个文件调用 normalizeImage 且没有单文件容错，
+    // 混入一个无法解码的文件会导致该次读取把全部后台播放数据截图一起丢弃。
     for (const file of currentPptPlaybackSource.files || []) {
       const relativePath = file.webkitRelativePath || file.name;
       if (!window.PptxClippings.isImageZipEntry(relativePath)) continue;
