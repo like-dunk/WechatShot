@@ -141,6 +141,10 @@ const elements = {
   pptFanZipInput: document.getElementById("pptFanZipInput"),
   pptFanFolderInput: document.getElementById("pptFanFolderInput"),
   pptFanSourceInfo: document.getElementById("pptFanSourceInfo"),
+  pptPlaybackSourcePicker: document.getElementById("pptPlaybackSourcePicker"),
+  pptPlaybackZipInput: document.getElementById("pptPlaybackZipInput"),
+  pptPlaybackFolderInput: document.getElementById("pptPlaybackFolderInput"),
+  pptPlaybackSourceInfo: document.getElementById("pptPlaybackSourceInfo"),
   pptZipInfo: document.getElementById("pptZipInfo"),
   generatePptButton: document.getElementById("generatePptButton"),
   statusBadge: document.getElementById("statusBadge"),
@@ -201,6 +205,8 @@ function init() {
   elements.pptFolderInput.addEventListener("change", handlePptFolderChange);
   elements.pptFanZipInput.addEventListener("change", handlePptFanZipChange);
   elements.pptFanFolderInput.addEventListener("change", handlePptFanFolderChange);
+  elements.pptPlaybackZipInput.addEventListener("change", handlePptPlaybackZipChange);
+  elements.pptPlaybackFolderInput.addEventListener("change", handlePptPlaybackFolderChange);
   elements.generatePptButton.addEventListener("click", generatePpt);
   elements.startButton.addEventListener("click", startRun);
   elements.pauseButton.addEventListener("click", () => sendAction("pause"));
@@ -270,6 +276,20 @@ function setupUploadDropZones() {
       input: elements.pptFanFolderInput,
       directory: true,
       onDrop: handlePptFanFolderFiles,
+    });
+  }
+  if (elements.pptPlaybackZipInput) {
+    setupUploadDropZone(elements.pptPlaybackZipInput.closest(".ppt-source-action"), {
+      input: elements.pptPlaybackZipInput,
+      multiple: false,
+      onDrop: (files) => handlePptPlaybackZipFile(files[0]),
+    });
+  }
+  if (elements.pptPlaybackFolderInput) {
+    setupUploadDropZone(elements.pptPlaybackFolderInput.closest(".ppt-source-action"), {
+      input: elements.pptPlaybackFolderInput,
+      directory: true,
+      onDrop: handlePptPlaybackFolderFiles,
     });
   }
   setupUploadDropZone(elements.pptTemplateInput.closest(".ppt-source-action"), {
@@ -554,6 +574,7 @@ async function handleSupplementFiles(files) {
 function handlePptModeChange() {
   syncPptModeUi();
   syncPptFanSourceInfo();
+  syncPptPlaybackSourceInfo();
   if (currentPptSource) {
     elements.pptZipInfo.textContent = buildPptSourceInfo(currentPptSource.name, currentPptSource.imageCount);
     return;
@@ -573,6 +594,14 @@ function syncPptModeUi() {
     elements.pptFanSourceInfo.hidden = !showFanSource;
     elements.pptFanSourceInfo.style.display = showFanSource ? "" : "none";
   }
+  if (elements.pptPlaybackSourcePicker) {
+    elements.pptPlaybackSourcePicker.hidden = !showFanSource;
+    elements.pptPlaybackSourcePicker.style.display = showFanSource ? "" : "none";
+  }
+  if (elements.pptPlaybackSourceInfo) {
+    elements.pptPlaybackSourceInfo.hidden = !showFanSource;
+    elements.pptPlaybackSourceInfo.style.display = showFanSource ? "" : "none";
+  }
   if (!showFanSource) {
     currentPptFanSource = null;
     // 让此刻仍在进行中的 ZIP/文件夹异步读取失效，避免它稍后 resolve 时把刚清空的
@@ -581,6 +610,10 @@ function syncPptModeUi() {
     pptFanSourceReadToken += 1;
     if (elements.pptFanZipInput) elements.pptFanZipInput.value = "";
     if (elements.pptFanFolderInput) elements.pptFanFolderInput.value = "";
+    currentPptPlaybackSource = null;
+    pptPlaybackSourceReadToken += 1;
+    if (elements.pptPlaybackZipInput) elements.pptPlaybackZipInput.value = "";
+    if (elements.pptPlaybackFolderInput) elements.pptPlaybackFolderInput.value = "";
   }
   // With a custom template the title box is preserved from the template itself,
   // so the editable title field only applies to built-in templates.
@@ -810,6 +843,82 @@ function syncPptFanSourceInfo() {
   elements.pptFanSourceInfo.textContent = "粉丝量截图按 Excel 序号+昵称命名（如 1_车源凯.png）；勾选自动 PPT 时需在开始截图前选好。若 Excel 表格里已内嵌粉丝量截图（列名含“粉丝”），无需上传即可自动识别。";
 }
 
+async function handlePptPlaybackZipChange(event) {
+  const file = event.target.files && event.target.files[0];
+  await handlePptPlaybackZipFile(file);
+}
+
+async function handlePptPlaybackZipFile(file) {
+  if (isGeneratingPpt) return;
+  const readToken = ++pptPlaybackSourceReadToken;
+  currentPptPlaybackSource = null;
+  if (!file) {
+    syncPptPlaybackSourceInfo();
+    return;
+  }
+  try {
+    if (!/\.zip$/i.test(file.name)) throw new Error("请选择 .zip 压缩包");
+    elements.pptPlaybackSourceInfo.textContent = `正在读取后台播放数据截图：${file.name}`;
+    addLog(`开始读取后台播放数据截图压缩包：${file.name}`);
+    const analysis = await window.PptxClippings.inspectZipFile(file);
+    if (readToken !== pptPlaybackSourceReadToken) return;
+    if (!analysis.imageCount) throw new Error("压缩包中没有找到 png、jpg、jpeg 或 webp 图片");
+    currentPptPlaybackSource = { type: "zip", name: file.name, file, imageCount: analysis.imageCount };
+    if (elements.pptPlaybackFolderInput) elements.pptPlaybackFolderInput.value = "";
+    syncPptPlaybackSourceInfo();
+    addLog(`后台播放数据截图压缩包读取完成：${analysis.imageCount} 张图片`, "success");
+  } catch (error) {
+    if (readToken !== pptPlaybackSourceReadToken) return;
+    currentPptPlaybackSource = null;
+    elements.pptPlaybackSourceInfo.textContent = `读取失败：${error.message}`;
+    addLog(`后台播放数据截图压缩包读取失败：${error.message}`, "failed");
+  }
+}
+
+async function handlePptPlaybackFolderChange(event) {
+  await handlePptPlaybackFolderFiles(Array.from(event.target.files || []));
+}
+
+async function handlePptPlaybackFolderFiles(files) {
+  if (isGeneratingPpt) return;
+  const readToken = ++pptPlaybackSourceReadToken;
+  currentPptPlaybackSource = null;
+  if (!files.length) {
+    syncPptPlaybackSourceInfo();
+    return;
+  }
+  const folderName = getPptFolderName(files);
+  try {
+    elements.pptPlaybackSourceInfo.textContent = `正在读取后台播放数据截图：${folderName}`;
+    addLog(`开始读取后台播放数据截图文件夹：${folderName}`);
+    const analysis = await window.PptxClippings.inspectImageFiles(files);
+    if (readToken !== pptPlaybackSourceReadToken) return;
+    if (!analysis.imageCount) throw new Error("文件夹中没有找到 png、jpg、jpeg 或 webp 图片");
+    currentPptPlaybackSource = { type: "folder", name: folderName, files, imageCount: analysis.imageCount };
+    if (elements.pptPlaybackZipInput) elements.pptPlaybackZipInput.value = "";
+    syncPptPlaybackSourceInfo();
+    addLog(`后台播放数据截图文件夹读取完成：${analysis.imageCount} 张图片`, "success");
+  } catch (error) {
+    if (readToken !== pptPlaybackSourceReadToken) return;
+    currentPptPlaybackSource = null;
+    elements.pptPlaybackSourceInfo.textContent = `读取失败：${error.message}`;
+    addLog(`后台播放数据截图文件夹读取失败：${error.message}`, "failed");
+  }
+}
+
+function syncPptPlaybackSourceInfo() {
+  if (!elements.pptPlaybackSourceInfo || !isReleaseInfoLikeMode(elements.pptModeInput.value)) return;
+  if (currentPptPlaybackSource) {
+    elements.pptPlaybackSourceInfo.textContent = `${currentPptPlaybackSource.name}，识别到 ${currentPptPlaybackSource.imageCount} 张后台播放数据截图，将按 Excel 序号+昵称精确匹配`;
+    return;
+  }
+  if (currentExcelPlaybackImages.length) {
+    elements.pptPlaybackSourceInfo.textContent = `未手动上传，已从 Excel 内嵌图片自动识别到 ${currentExcelPlaybackImages.length} 张后台播放数据截图，将按 Excel 序号+昵称精确匹配（手动上传可覆盖）`;
+    return;
+  }
+  elements.pptPlaybackSourceInfo.textContent = "后台播放数据截图按 Excel 序号+昵称命名（如 1_车源凯.png）；勾选自动 PPT 时需在开始截图前选好。若 Excel 表格里已内嵌后台播放数据截图（列名含“后台播放”），无需上传即可自动识别。";
+}
+
 // 从某个已解析 Excel 文件的 cellImages（parseXlsx 提取出的 {row, col, bytes, ext}）中，
 // 挑出实际内嵌了截图、且表头模糊匹配「粉丝」的那一列，按该行 buildTasks 会生成的
 // 序号+昵称生成与手动上传文件夹同名规则一致的 fanImages 条目（如「1_车源凯.png」），
@@ -940,6 +1049,8 @@ async function generatePpt() {
     elements.pptFolderInput.disabled = true;
     if (elements.pptFanZipInput) elements.pptFanZipInput.disabled = true;
     if (elements.pptFanFolderInput) elements.pptFanFolderInput.disabled = true;
+    if (elements.pptPlaybackZipInput) elements.pptPlaybackZipInput.disabled = true;
+    if (elements.pptPlaybackFolderInput) elements.pptPlaybackFolderInput.disabled = true;
     elements.pptModeInput.disabled = true;
     if (elements.pptReleaseTitleInput) elements.pptReleaseTitleInput.disabled = true;
     elements.generatePptButton.textContent = "正在生成...";
@@ -961,6 +1072,8 @@ async function generatePpt() {
     elements.pptFolderInput.disabled = Boolean(running);
     if (elements.pptFanZipInput) elements.pptFanZipInput.disabled = Boolean(running);
     if (elements.pptFanFolderInput) elements.pptFanFolderInput.disabled = Boolean(running);
+    if (elements.pptPlaybackZipInput) elements.pptPlaybackZipInput.disabled = Boolean(running);
+    if (elements.pptPlaybackFolderInput) elements.pptPlaybackFolderInput.disabled = Boolean(running);
     elements.pptModeInput.disabled = Boolean(running) || isPptModeLockedByTemplate();
     if (elements.pptTemplateSourceInput) elements.pptTemplateSourceInput.disabled = Boolean(running);
     if (elements.pptTemplateInput) elements.pptTemplateInput.disabled = Boolean(running);
@@ -3494,6 +3607,8 @@ function applyState(state) {
   elements.pptFolderInput.disabled = running || pptBusy;
   if (elements.pptFanZipInput) elements.pptFanZipInput.disabled = running || pptBusy;
   if (elements.pptFanFolderInput) elements.pptFanFolderInput.disabled = running || pptBusy;
+  if (elements.pptPlaybackZipInput) elements.pptPlaybackZipInput.disabled = running || pptBusy;
+  if (elements.pptPlaybackFolderInput) elements.pptPlaybackFolderInput.disabled = running || pptBusy;
   elements.generatePptButton.disabled = running || pptBusy || !currentPptSource;
   elements.limitInput.disabled = running;
   elements.sequenceModeInput.disabled = running;
