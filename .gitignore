@@ -44,6 +44,10 @@ tools/
 # Screenshots and generated images
 *.png
 
+# PPT output/sample files (built-in templates loaded by pptx-builder.js
+# stay tracked via existing git history; use `git add -f` to update them)
+*.pptx
+
 # Temporary files
 .tmp/
 tmp/
