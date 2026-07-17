@@ -64,7 +64,7 @@ async function resolvePlaybackImagesForPpt(options = {}) {
     const record = await window.PlaybackSourceCache.getPlaybackSource(id);
     if (record) return await window.PptxClippings.loadImagesFromCacheRecord(record);
   } catch (error) {
-    setStatus(`读取后台播放数据截图缓存失败：${error.message}`);
+    setStatus(`读取视频播放数据截图缓存失败：${error.message}`);
   }
   return [];
 }

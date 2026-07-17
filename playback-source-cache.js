@@ -16,14 +16,14 @@
         if (!store.indexNames.contains(CREATED_INDEX)) store.createIndex(CREATED_INDEX, "createdAt", { unique: false });
       };
       request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error || new Error("打开后台播放数据截图缓存失败"));
+      request.onerror = () => reject(request.error || new Error("打开视频播放数据截图缓存失败"));
     });
   }
 
   function requestToPromise(request) {
     return new Promise((resolve, reject) => {
       request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error || new Error("后台播放数据截图缓存请求失败"));
+      request.onerror = () => reject(request.error || new Error("视频播放数据截图缓存请求失败"));
     });
   }
 
@@ -32,11 +32,11 @@
   }
 
   async function putPlaybackSource(record) {
-    if (!record || !Array.isArray(record.files) || !record.files.length) throw new Error("后台播放数据截图缓存记录不完整");
+    if (!record || !Array.isArray(record.files) || !record.files.length) throw new Error("视频播放数据截图缓存记录不完整");
     const id = record.id || buildPlaybackSourceId();
     const stored = {
       id,
-      name: record.name || "后台播放数据截图",
+      name: record.name || "视频播放数据截图",
       files: record.files.map((file) => ({
         fileName: file.fileName || "截图.png",
         blob: file.blob,
@@ -49,8 +49,8 @@
       transaction.objectStore(STORE_NAME).put(stored);
       await new Promise((resolve, reject) => {
         transaction.oncomplete = () => resolve();
-        transaction.onerror = () => reject(transaction.error || new Error("写入后台播放数据截图缓存失败"));
-        transaction.onabort = () => reject(transaction.error || new Error("写入后台播放数据截图缓存中断"));
+        transaction.onerror = () => reject(transaction.error || new Error("写入视频播放数据截图缓存失败"));
+        transaction.onabort = () => reject(transaction.error || new Error("写入视频播放数据截图缓存中断"));
       });
     } finally {
       db.close();
@@ -77,8 +77,8 @@
       transaction.objectStore(STORE_NAME).delete(id);
       await new Promise((resolve, reject) => {
         transaction.oncomplete = () => resolve();
-        transaction.onerror = () => reject(transaction.error || new Error("删除后台播放数据截图缓存失败"));
-        transaction.onabort = () => reject(transaction.error || new Error("删除后台播放数据截图缓存中断"));
+        transaction.onerror = () => reject(transaction.error || new Error("删除视频播放数据截图缓存失败"));
+        transaction.onabort = () => reject(transaction.error || new Error("删除视频播放数据截图缓存中断"));
       });
     } finally {
       db.close();
@@ -101,10 +101,10 @@
           count += 1;
           cursor.continue();
         };
-        request.onerror = () => reject(request.error || new Error("读取旧后台播放数据截图缓存失败"));
+        request.onerror = () => reject(request.error || new Error("读取旧视频播放数据截图缓存失败"));
         transaction.oncomplete = () => resolve(count);
-        transaction.onerror = () => reject(transaction.error || new Error("清理旧后台播放数据截图缓存失败"));
-        transaction.onabort = () => reject(transaction.error || new Error("清理旧后台播放数据截图缓存中断"));
+        transaction.onerror = () => reject(transaction.error || new Error("清理旧视频播放数据截图缓存失败"));
+        transaction.onabort = () => reject(transaction.error || new Error("清理旧视频播放数据截图缓存中断"));
       });
     } finally {
       db.close();

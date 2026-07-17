@@ -676,7 +676,7 @@
     };
   }
 
-  // 通用「序号_昵称」辅助图匹配算法，粉丝量截图与后台播放数据截图共用同一份实现。
+  // 通用「序号_昵称」辅助图匹配算法，粉丝量截图与视频播放数据截图共用同一份实现。
   function buildAuxImageMap(auxImages, tasks = []) {
     const map = new Map();
     const availableTasks = Array.isArray(tasks) ? tasks : [];
@@ -940,7 +940,7 @@
       spTree.appendChild(createPictureNode(doc, nextShapeId, item.account || "发布截图", mainImage.relId, fitPictureIntoBox(mainImage, leftBox)));
       nextShapeId += 1;
       layoutAuxImages(auxImages, rightBox).forEach(({ image, position }) => {
-        const label = image === imageLinks.fan ? "粉丝量截图" : "后台播放数据截图";
+        const label = image === imageLinks.fan ? "粉丝量截图" : "视频播放数据截图";
         spTree.appendChild(createPictureNode(doc, nextShapeId, label, image.relId, position));
         nextShapeId += 1;
       });
@@ -990,7 +990,7 @@
         : splitBoxHorizontally(mainBox);
       spTree.appendChild(createPictureNode(doc, getMaxShapeId(doc) + 1, item.account || "发布截图", mainImage.relId, fitPictureIntoBox(mainImage, mainRenderBox)));
       layoutAuxImages(auxImages, auxBox).forEach(({ image, position }) => {
-        const label = image === imageLinks.fan ? "粉丝量截图" : "后台播放数据截图";
+        const label = image === imageLinks.fan ? "粉丝量截图" : "视频播放数据截图";
         spTree.appendChild(createPictureNode(doc, getMaxShapeId(doc) + 1, label, image.relId, position));
       });
     }

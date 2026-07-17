@@ -91,7 +91,7 @@ let currentPptFanSource = null;
 // 已按「序号_昵称.ext」命名，可直接当作 fanImages 使用。手动上传的 currentPptFanSource 始终优先。
 let currentExcelFanImages = [];
 let currentPptPlaybackSource = null;
-// 未手动上传后台播放数据截图时的兜底来源：从已导入 Excel 里模糊匹配到「后台播放」的列中提取内嵌截图，
+// 未手动上传视频播放数据截图时的兜底来源：从已导入 Excel 里模糊匹配到「视频播放」的列中提取内嵌截图，
 // 已按「序号_昵称.ext」命名，可直接当作 playbackImages 使用。手动上传的 currentPptPlaybackSource 始终优先。
 let currentExcelPlaybackImages = [];
 let currentPptTemplate = null;
@@ -457,7 +457,7 @@ async function applyImportedTaskFiles() {
     syncPptFanSourceInfo();
     currentExcelPlaybackImages = importedTaskFiles.flatMap((file) => file.playbackImages || []);
     if (currentExcelPlaybackImages.length) {
-      addLog(`已从 Excel 内嵌图片自动识别到 ${currentExcelPlaybackImages.length} 张后台播放数据截图，未手动上传时将按 Excel 序号+昵称自动匹配`, "success");
+      addLog(`已从 Excel 内嵌图片自动识别到 ${currentExcelPlaybackImages.length} 张视频播放数据截图，未手动上传时将按 Excel 序号+昵称自动匹配`, "success");
     }
     syncPptPlaybackSourceInfo();
     if (importedTaskFiles.length === 1) {
@@ -858,20 +858,20 @@ async function handlePptPlaybackZipFile(file) {
   }
   try {
     if (!/\.zip$/i.test(file.name)) throw new Error("请选择 .zip 压缩包");
-    elements.pptPlaybackSourceInfo.textContent = `正在读取后台播放数据截图：${file.name}`;
-    addLog(`开始读取后台播放数据截图压缩包：${file.name}`);
+    elements.pptPlaybackSourceInfo.textContent = `正在读取视频播放数据截图：${file.name}`;
+    addLog(`开始读取视频播放数据截图压缩包：${file.name}`);
     const analysis = await window.PptxClippings.inspectZipFile(file);
     if (readToken !== pptPlaybackSourceReadToken) return;
     if (!analysis.imageCount) throw new Error("压缩包中没有找到 png、jpg、jpeg 或 webp 图片");
     currentPptPlaybackSource = { type: "zip", name: file.name, file, imageCount: analysis.imageCount };
     if (elements.pptPlaybackFolderInput) elements.pptPlaybackFolderInput.value = "";
     syncPptPlaybackSourceInfo();
-    addLog(`后台播放数据截图压缩包读取完成：${analysis.imageCount} 张图片`, "success");
+    addLog(`视频播放数据截图压缩包读取完成：${analysis.imageCount} 张图片`, "success");
   } catch (error) {
     if (readToken !== pptPlaybackSourceReadToken) return;
     currentPptPlaybackSource = null;
     elements.pptPlaybackSourceInfo.textContent = `读取失败：${error.message}`;
-    addLog(`后台播放数据截图压缩包读取失败：${error.message}`, "failed");
+    addLog(`视频播放数据截图压缩包读取失败：${error.message}`, "failed");
   }
 }
 
@@ -889,34 +889,34 @@ async function handlePptPlaybackFolderFiles(files) {
   }
   const folderName = getPptFolderName(files);
   try {
-    elements.pptPlaybackSourceInfo.textContent = `正在读取后台播放数据截图：${folderName}`;
-    addLog(`开始读取后台播放数据截图文件夹：${folderName}`);
+    elements.pptPlaybackSourceInfo.textContent = `正在读取视频播放数据截图：${folderName}`;
+    addLog(`开始读取视频播放数据截图文件夹：${folderName}`);
     const analysis = await window.PptxClippings.inspectImageFiles(files);
     if (readToken !== pptPlaybackSourceReadToken) return;
     if (!analysis.imageCount) throw new Error("文件夹中没有找到 png、jpg、jpeg 或 webp 图片");
     currentPptPlaybackSource = { type: "folder", name: folderName, files, imageCount: analysis.imageCount };
     if (elements.pptPlaybackZipInput) elements.pptPlaybackZipInput.value = "";
     syncPptPlaybackSourceInfo();
-    addLog(`后台播放数据截图文件夹读取完成：${analysis.imageCount} 张图片`, "success");
+    addLog(`视频播放数据截图文件夹读取完成：${analysis.imageCount} 张图片`, "success");
   } catch (error) {
     if (readToken !== pptPlaybackSourceReadToken) return;
     currentPptPlaybackSource = null;
     elements.pptPlaybackSourceInfo.textContent = `读取失败：${error.message}`;
-    addLog(`后台播放数据截图文件夹读取失败：${error.message}`, "failed");
+    addLog(`视频播放数据截图文件夹读取失败：${error.message}`, "failed");
   }
 }
 
 function syncPptPlaybackSourceInfo() {
   if (!elements.pptPlaybackSourceInfo || !isReleaseInfoLikeMode(elements.pptModeInput.value)) return;
   if (currentPptPlaybackSource) {
-    elements.pptPlaybackSourceInfo.textContent = `${currentPptPlaybackSource.name}，识别到 ${currentPptPlaybackSource.imageCount} 张后台播放数据截图，将按 Excel 序号+昵称精确匹配`;
+    elements.pptPlaybackSourceInfo.textContent = `${currentPptPlaybackSource.name}，识别到 ${currentPptPlaybackSource.imageCount} 张视频播放数据截图，将按 Excel 序号+昵称精确匹配`;
     return;
   }
   if (currentExcelPlaybackImages.length) {
-    elements.pptPlaybackSourceInfo.textContent = `未手动上传，已从 Excel 内嵌图片自动识别到 ${currentExcelPlaybackImages.length} 张后台播放数据截图，将按 Excel 序号+昵称精确匹配（手动上传可覆盖）`;
+    elements.pptPlaybackSourceInfo.textContent = `未手动上传，已从 Excel 内嵌图片自动识别到 ${currentExcelPlaybackImages.length} 张视频播放数据截图，将按 Excel 序号+昵称精确匹配（手动上传可覆盖）`;
     return;
   }
-  elements.pptPlaybackSourceInfo.textContent = "后台播放数据截图按 Excel 序号+昵称命名（如 1_车源凯.png）；勾选自动 PPT 时需在开始截图前选好。若 Excel 表格里已内嵌后台播放数据截图（列名含“后台播放”），无需上传即可自动识别。";
+  elements.pptPlaybackSourceInfo.textContent = "视频播放数据截图按 Excel 序号+昵称命名（如 1_车源凯.png）；勾选自动 PPT 时需在开始截图前选好。若 Excel 表格里已内嵌视频播放数据截图（列名含“视频播放”），无需上传即可自动识别。";
 }
 
 // 从某个已解析 Excel 文件的 cellImages（parseXlsx 提取出的 {row, col, bytes, ext}）中，
@@ -984,7 +984,7 @@ function resolveFanColumnIndex(headerRow, cellImages) {
   return Array.from(imageColCounts.entries()).sort((a, b) => b[1] - a[1])[0][0];
 }
 
-// 从某个已解析 Excel 文件的 cellImages 中，挑出实际内嵌了截图、且表头模糊匹配「后台播放」的
+// 从某个已解析 Excel 文件的 cellImages 中，挑出实际内嵌了截图、且表头模糊匹配「视频播放」的
 // 那一列，产出与手动上传文件夹同名规则一致的 playbackImages 条目。逻辑与
 // extractFanImagesFromCellImages 完全对称，仅表头关键词与产物字段名不同。
 async function extractPlaybackImagesFromCellImages(rows, cellImages, fileName = "") {
@@ -1016,17 +1016,17 @@ async function extractPlaybackImagesFromCellImages(rows, cellImages, fileName = 
     try {
       images.push(await window.PptxClippings.normalizeImage(name, cellImage.bytes));
     } catch (error) {
-      addLog(`解析「${fileName}」内嵌后台播放数据截图失败（${task.nickname}）：${error.message}`, "warning");
+      addLog(`解析「${fileName}」内嵌视频播放数据截图失败（${task.nickname}）：${error.message}`, "warning");
     }
   }
   return images;
 }
 
-// 表头模糊匹配「后台播放」的列可能不止一个，此时优先选真正承载内嵌图片的那一列。
+// 表头模糊匹配「视频播放」的列可能不止一个，此时优先选真正承载内嵌图片的那一列。
 function resolvePlaybackColumnIndex(headerRow, cellImages) {
   const candidateCols = [];
   for (let col = 0; col < getMaxColumnCount([headerRow]); col += 1) {
-    if (normalizeHeader(headerRow[col]).includes("后台播放")) candidateCols.push(col);
+    if (normalizeHeader(headerRow[col]).includes("视频播放")) candidateCols.push(col);
   }
   if (!candidateCols.length) return -1;
   if (candidateCols.length === 1) return candidateCols[0];
@@ -1222,7 +1222,7 @@ async function resolvePlaybackImagesForPpt(options = {}) {
       const record = await window.PlaybackSourceCache.getPlaybackSource(options.autoPptPlaybackSourceId);
       if (record) return await window.PptxClippings.loadImagesFromCacheRecord(record);
     } catch (error) {
-      addLog(`读取后台播放数据截图缓存失败，尝试改用当前弹窗内仍保留的来源：${error.message}`, "warning");
+      addLog(`读取视频播放数据截图缓存失败，尝试改用当前弹窗内仍保留的来源：${error.message}`, "warning");
     }
   }
   if (!isReleaseInfoLikeMode(options.modeValue || elements.pptModeInput.value)) return [];
@@ -1231,7 +1231,7 @@ async function resolvePlaybackImagesForPpt(options = {}) {
     try {
       return await window.PptxClippings.loadImagesFromPptSource(playbackSource);
     } catch (error) {
-      addLog(`读取后台播放数据截图来源失败：${error.message}`, "warning");
+      addLog(`读取视频播放数据截图来源失败：${error.message}`, "warning");
       return [];
     }
   }
@@ -1253,7 +1253,7 @@ async function persistPlaybackSourceForAutoPpt() {
   } else if (currentPptPlaybackSource) {
     // 过滤掉非图片文件（如 macOS Finder 打开过文件夹后留下的 .DS_Store）：
     // loadImagesFromCacheRecord 后续会对缓存里每个文件调用 normalizeImage 且没有单文件容错，
-    // 混入一个无法解码的文件会导致该次读取把全部后台播放数据截图一起丢弃。
+    // 混入一个无法解码的文件会导致该次读取把全部视频播放数据截图一起丢弃。
     for (const file of currentPptPlaybackSource.files || []) {
       const relativePath = file.webkitRelativePath || file.name;
       if (!window.PptxClippings.isImageZipEntry(relativePath)) continue;
@@ -1272,7 +1272,7 @@ async function persistPlaybackSourceForAutoPpt() {
   }
   if (!files.length) return "";
   return window.PlaybackSourceCache.putPlaybackSource({
-    name: currentPptPlaybackSource ? currentPptPlaybackSource.name : "Excel 内嵌后台播放数据截图",
+    name: currentPptPlaybackSource ? currentPptPlaybackSource.name : "Excel 内嵌视频播放数据截图",
     files,
   });
 }
@@ -1292,13 +1292,13 @@ function buildPptSourceInfo(name, imageCount) {
   const fanCount = currentPptFanSource ? currentPptFanSource.imageCount : currentExcelFanImages.length;
   const fanText = isReleaseInfoLikeMode(mode.value) && fanCount ? `，粉丝量截图 ${fanCount} 张将按 Excel 序号+昵称匹配` : "";
   const playbackCount = currentPptPlaybackSource ? currentPptPlaybackSource.imageCount : currentExcelPlaybackImages.length;
-  const playbackText = isReleaseInfoLikeMode(mode.value) && playbackCount ? `，后台播放数据截图 ${playbackCount} 张将按 Excel 序号+昵称匹配` : "";
+  const playbackText = isReleaseInfoLikeMode(mode.value) && playbackCount ? `，视频播放数据截图 ${playbackCount} 张将按 Excel 序号+昵称匹配` : "";
   return `${name}，识别到 ${imageCount} 张图片，将生成${mode.label} PPT${taskText}${fanText}${playbackText}`;
 }
 
 function buildPptResultInfo(mode, result) {
   const fanText = result.fanMatchedCount ? `，其中 ${result.fanMatchedCount} 页含粉丝量截图` : "";
-  const playbackText = result.playbackMatchedCount ? `，${result.playbackMatchedCount} 页含后台播放数据截图` : "";
+  const playbackText = result.playbackMatchedCount ? `，${result.playbackMatchedCount} 页含视频播放数据截图` : "";
   if (mode.value === "link-screenshot") {
     return `已生成：${result.imageCount} 张图片，${result.slideCount} 页链接截图单图单页`;
   }
@@ -3605,14 +3605,14 @@ async function startRun() {
     try {
       isPreparingSupplementStart = true;
       updateStartButtonDisabled();
-      addLog("正在缓存后台播放数据截图来源，供截图完成后自动 PPT 使用...");
+      addLog("正在缓存视频播放数据截图来源，供截图完成后自动 PPT 使用...");
       options.autoPptPlaybackSourceId = await persistPlaybackSourceForAutoPpt();
       const playbackCount = currentPptPlaybackSource ? currentPptPlaybackSource.imageCount : currentExcelPlaybackImages.length;
       const playbackOrigin = currentPptPlaybackSource ? "" : "（来自 Excel 内嵌图片自动识别）";
-      addLog(`后台播放数据截图来源已缓存：${playbackCount} 张${playbackOrigin}，将在自动 PPT 中按 Excel 序号+昵称匹配`, "success");
+      addLog(`视频播放数据截图来源已缓存：${playbackCount} 张${playbackOrigin}，将在自动 PPT 中按 Excel 序号+昵称匹配`, "success");
     } catch (error) {
-      // 后台播放数据截图只是自动 PPT 的锦上添花项，缓存失败不应该阻断本次与它无关的整批截图任务。
-      addLog(`后台播放数据截图缓存失败，本次截图任务仍会继续，自动生成的 PPT 将不含后台播放数据截图：${error.message}`, "warning");
+      // 视频播放数据截图只是自动 PPT 的锦上添花项，缓存失败不应该阻断本次与它无关的整批截图任务。
+      addLog(`视频播放数据截图缓存失败，本次截图任务仍会继续，自动生成的 PPT 将不含视频播放数据截图：${error.message}`, "warning");
       options.autoPptPlaybackSourceId = "";
     }
     isPreparingSupplementStart = false;
